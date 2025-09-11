@@ -64,3 +64,8 @@ python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-07-01
 ```
 Más detalles en: [`docs/usage/ingest_crypto_m1.md`](docs/usage/ingest_crypto_m1.md)
 
+
+
+## Fase 2 · Agregados & Niveles (B&R)
+Ver guía: [`docs/usage/phase2_aggregates_levels.md`](docs/usage/phase2_aggregates_levels.md)
+
