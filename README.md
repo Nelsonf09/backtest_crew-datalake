@@ -69,3 +69,14 @@ Más detalles en: [`docs/usage/ingest_crypto_m1.md`](docs/usage/ingest_crypto_m1
 ## Fase 2 · Agregados & Niveles (B&R)
 Ver guía: [`docs/usage/phase2_aggregates_levels.md`](docs/usage/phase2_aggregates_levels.md)
 
+
+
+## Fase 3 · Bridge Offline (backtest_crew)
+- Proveedor `LakeProvider` que entrega `df_exec` y `df_filter` con el mismo layout que IB.
+- Soporta TFs: M1/M5/M15/H1/D1 (usa agregados precomputados o *fallback* on-the-fly).
+
+```bash
+python -m bridge.backtest_crew.cli --symbol BTC-USD --from 2025-07-01 --to 2025-07-10 --exec-tf "1 min" --filter-tf "5 mins"
+```
+Más info: [`docs/usage/phase3_offline_bridge.md`](docs/usage/phase3_offline_bridge.md)
+
