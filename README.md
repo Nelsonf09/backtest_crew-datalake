@@ -49,3 +49,18 @@ ensure_submodule_on_syspath()
 from config.crypto_symbols import CRYPTO_SYMBOLS
 ```
 
+
+
+## Fase 1 · Ingesta de Cripto (M1, IBKR)
+- Descarga de velas **M1** vía IBKR (`AGGTRADES`).
+- Persistencia en **Parquet ZSTD** con particionado `source/market/timeframe/symbol/year/month`.
+- **Timestamps** en UTC con semántica **bar_end**.
+
+### Quickstart
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-07-01 --to 2025-07-31
+```
+Más detalles en: [`docs/usage/ingest_crypto_m1.md`](docs/usage/ingest_crypto_m1.md)
+
