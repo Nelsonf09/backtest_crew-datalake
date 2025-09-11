@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from typing import Tuple
+import importlib
 from datalake.ingestors.ibkr.submodule_bridge import ensure_submodule_on_syspath
 
 ensure_submodule_on_syspath()
 
 try:
-    # Reuso directo del submódulo (sin tocarlo)
-    from config.crypto_symbols import CRYPTO_SYMBOLS, IB_CRYPTO_EX, DEFAULT_CRYPTO  # type: ignore
+    # Cargamos módulo de símbolos del submódulo vendor.
+    _cfg = importlib.import_module("config.crypto_symbols")
+    CRYPTO_SYMBOLS = getattr(_cfg, "CRYPTO_SYMBOLS", [])
+    DEFAULT_CRYPTO = getattr(_cfg, "DEFAULT_CRYPTO", "BTC-USD")
+    IB_CRYPTO_EX = getattr(_cfg, "IB_CRYPTO_EX", {})
+    DEFAULT_EXCHANGE = getattr(_cfg, "IB_CRYPTO_EXCHANGE", "PAXOS")
 except Exception as e:
     raise ImportError(f"No se pudo importar config.crypto_symbols desde submódulo: {e}")
 
@@ -43,7 +48,7 @@ def make_crypto_contract(symbol: str, exchange: str | None = None) -> Contract:
     if CRYPTO_SYMBOLS and base not in CRYPTO_SYMBOLS:
         # permitir símbolos nuevos, pero avisar
         pass
-    ex = exchange or IB_CRYPTO_EX.get(base, 'PAXOS')
+    ex = exchange or IB_CRYPTO_EX.get(base, DEFAULT_EXCHANGE)
     c = Contract()
     c.secType = 'CRYPTO'
     c.symbol = base
