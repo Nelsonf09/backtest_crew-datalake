@@ -34,8 +34,12 @@ levels/
 - Niveles diarios **estrechos**: `session_date`, `pdh/pdl/pdc` (D-1), `or_start_utc/or_end_utc`, `orh/orl`.
 - **Crypto**: `what_to_show=AGGTRADES`, 24/7, sin RTH.
 
+## Fase 1 — Ingesta M1 de Cripto (IBKR)
+La Fase 1 implementa la ingesta offline de velas M1 desde Interactive Brokers.
+Sigue la [guía de uso](docs/usage/ingest_crypto_m1.md) para descargar datos de **BTC-USD**, **ETH-USD** u otros símbolos y
+guardarlos como Parquet particionado.
+
 ## Próximas fases
-- Fase 1: Ingesta offline M1 (BTC-USD, ETH-USD) y validación.
 - Fase 2: Agregados (M5/M15/H1/D1) y niveles diarios.
 - Fase 3: Capa de acceso (DuckDB→pandas / Polars) y contratos de lectura.
 
