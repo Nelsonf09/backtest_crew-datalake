@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Tuple
 import pandas as pd
@@ -10,11 +10,11 @@ from datalake.aggregates.aggregate import _agg as agg_fn  # para fallback on-the
 
 # ------------------------------- Utils -------------------------------
 _TF_RULE = {
-    '1 min': 'M1', '1min': 'M1', 'M1': 'M1',
-    '5 mins': 'M5', '5min': 'M5', 'M5': 'M5',
-    '15 mins': 'M15', '15min': 'M15', 'M15': 'M15',
-    '1 hour': 'H1', '60min': 'H1', 'H1': 'H1',
-    '1 day': 'D1', 'D1': 'D1'
+    '1min': 'M1', 'm1': 'M1',
+    '5mins': 'M5', '5min': 'M5', 'm5': 'M5',
+    '15mins': 'M15', '15min': 'M15', 'm15': 'M15',
+    '1hour': 'H1', '60min': 'H1', 'h1': 'H1',
+    '1day': 'D1', 'd1': 'D1'
 }
 _RULE_TO_PANDAS = {'M1':'1min','M5':'5min','M15':'15min','H1':'60min','D1':'1D'}
 
@@ -47,7 +47,7 @@ def _read_aggregate_parquet(cfg: LakeConfig, symbol: str, tf_norm: str, start: p
 # ----------------------------- Provider -----------------------------
 @dataclass
 class LakeProvider:
-    cfg: LakeConfig = LakeConfig()
+    cfg: LakeConfig = field(default_factory=LakeConfig)
 
     def load_exec_and_filter(self, symbol: str, start_utc: str, end_utc: str,
                              exec_tf: str = '1 min', filter_tf: str = '5 mins') -> Tuple[pd.DataFrame, pd.DataFrame]:
