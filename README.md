@@ -38,3 +38,14 @@ levels/
 - Fase 1: Ingesta offline M1 (BTC-USD, ETH-USD) y validación.
 - Fase 2: Agregados (M5/M15/H1/D1) y niveles diarios.
 - Fase 3: Capa de acceso (DuckDB→pandas / Polars) y contratos de lectura.
+
+
+## Reuso de código `backtest_crew`
+Este repo **reusa** módulos de `backtest_crew` ubicados bajo `vendor/backtest_crew` (como submódulo o snapshot). Para importarlos desde el código del datalake:
+
+```python
+from datalake.ingestors.ibkr.submodule_bridge import ensure_submodule_on_syspath
+ensure_submodule_on_syspath()
+from config.crypto_symbols import CRYPTO_SYMBOLS
+```
+
