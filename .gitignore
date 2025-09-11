@@ -13,3 +13,9 @@
 __pycache__/
 .venv/
 .env
+
+cache/
+data/
+*.tmp.parquet
+levels/
+*.parquet
