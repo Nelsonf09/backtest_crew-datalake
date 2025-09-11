@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Schema Niveles Diarios (estrecho)",
+  "type": "object",
+  "properties": {
+    "session_date": {"type": "string", "format": "date"},
+    "pdh": {"type": "number"},
+    "pdl": {"type": "number"},
+    "pdc": {"type": "number"},
+    "or_start_utc": {"type": "string", "format": "date-time"},
+    "or_end_utc": {"type": "string", "format": "date-time"},
+    "orh": {"type": "number"},
+    "orl": {"type": "number"},
+    "tz": {"type": "string"},
+    "or_profile_key": {"type": "string"},
+    "symbol": {"type": "string"},
+    "market": {"type": "string", "enum": ["crypto"]}
+  },
+  "required": ["session_date"],
+  "additionalProperties": true
+}

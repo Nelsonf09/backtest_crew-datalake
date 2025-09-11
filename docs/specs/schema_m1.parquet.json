@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Schema M1 OHLCV (Crypto)",
+  "type": "object",
+  "properties": {
+    "ts": {"type": "string", "format": "date-time", "description": "UTC bar_end timestamp"},
+    "open": {"type": "number"},
+    "high": {"type": "number"},
+    "low": {"type": "number"},
+    "close": {"type": "number"},
+    "volume": {"type": "integer"},
+    "source": {"type": "string", "enum": ["ibkr"]},
+    "market": {"type": "string", "enum": ["crypto"]},
+    "symbol": {"type": "string"},
+    "exchange": {"type": "string"},
+    "what_to_show": {"type": "string", "enum": ["AGGTRADES"]}
+  },
+  "required": ["ts", "open", "high", "low", "close", "volume"],
+  "additionalProperties": true
+}
