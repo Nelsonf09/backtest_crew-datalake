@@ -1,0 +1,15 @@
+# data lake local (no versionar binarios)
+/data/
+/levels/
+/cache/
+**/*.parquet
+**/*.feather
+**/*.arrow
+**/*.duckdb
+**/*.sqlite
+**/*.db
+**/.DS_Store
+.pyc
+__pycache__/
+.venv/
+.env
