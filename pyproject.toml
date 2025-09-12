@@ -11,7 +11,8 @@ dependencies = [
   "pandas>=2.2",
   "pyarrow>=14",
   "rich>=13.7",
-  "pytz>=2024.1"
+  "pytz>=2024.1",
+  "python-dotenv>=1.0.1"
 ]
 
 [tool.setuptools.packages.find]
