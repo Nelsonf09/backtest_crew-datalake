@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backtest-crew-datalake"
+version = "0.1.0"
+description = "Datalake + agregados + niveles + bridge offline para backtest_crew"
+requires-python = ">=3.11"
+dependencies = [
+  "pandas>=2.2",
+  "pyarrow>=14",
+  "rich>=13.7",
+  "pytz>=2024.1"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+# CLIs útiles ya presentes en el repo
+datalake-ingest = "datalake.ingest.cli:main"
+datalake-aggregates = "datalake.aggregates.cli:main"
+datalake-levels = "datalake.levels.cli:main"
+bridge-bc-smoke = "bridge.backtest_crew.cli:main"
