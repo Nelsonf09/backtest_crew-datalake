@@ -28,6 +28,57 @@ SCHEMA = pa.schema([
     pa.field("tz", pa.string())
 ])
 
+# -- Asegurar metadatos requeridos antes del schema --
+def _val(obj, *names, default=None):
+    for n in names:
+        if hasattr(obj, n):
+            v = getattr(obj, n)
+            if v is not None and v != "":
+                return v
+    return default
+
+
+def _ensure_metadata(pdf: pd.DataFrame, symbol: str, cfg) -> pd.DataFrame:
+    pdf = pdf.copy()
+    # Defaults desde cfg o entorno
+    market = _val(cfg, "market", default="crypto")
+    timeframe = _val(cfg, "timeframe", default="M1")
+    source = _val(cfg, "source", "vendor", default="ibkr")
+    vendor = _val(cfg, "vendor", "source", default="ibkr")
+    exchange = _val(
+        cfg,
+        "exchange",
+        "ib_exchange",
+        default=os.getenv("IB_EXCHANGE_CRYPTO", "PAXOS"),
+    )
+    what_show = _val(
+        cfg,
+        "what_to_show",
+        default=os.getenv("IB_WHAT_TO_SHOW", "AGGTRADES"),
+    )
+    tz = _val(cfg, "tz", default="UTC")
+
+    defaults = {
+        "market": market,
+        "timeframe": timeframe,
+        "source": source,
+        "vendor": vendor,
+        "symbol": str(symbol),
+        "exchange": exchange,
+        "what_to_show": what_show,
+        "tz": tz,
+    }
+    for k, v in defaults.items():
+        if k not in pdf.columns:
+            pdf[k] = v
+        else:
+            # Rellena NaN con el default
+            try:
+                pdf[k] = pdf[k].fillna(v)
+            except Exception:
+                pdf[k] = v
+    return pdf
+
 
 def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     pdf = pdf.copy()
@@ -46,7 +97,10 @@ def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf
 
 
-def _to_table(pdf: pd.DataFrame) -> pa.Table:
+def _to_table(pdf: pd.DataFrame, symbol: str, cfg) -> pa.Table:
+    # Asegura metadatos requeridos y normaliza tipos antes de fijar el schema
+    # Evita KeyError por columnas ausentes como 'timeframe'
+    pdf = _ensure_metadata(pdf, symbol=symbol, cfg=cfg)
     pdf = _normalize_schema_pdf(pdf)
     return pa.Table.from_pandas(pdf, schema=SCHEMA, preserve_index=False)
 
@@ -79,7 +133,7 @@ def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
     dest_file = base / f"part-{year}-{month:02d}.parquet"
 
     # Tabla nueva ya con schema consistente
-    new_tbl = _to_table(pdf)
+    new_tbl = _to_table(pdf, symbol=symbol, cfg=cfg)
 
     if dest_file.exists():
         # Leer SOLO este archivo, no como dataset de carpeta
