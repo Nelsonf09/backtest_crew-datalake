@@ -5,7 +5,7 @@ from datalake.ingestors.ibkr.writer import write_month
 
 AGG_MAP = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
 
-TF_RULE = {"M5":"5min", "M15":"15min", "H1":"1H"}
+TF_RULE = {"M5":"5min", "M15":"15min", "H1":"1h"}
 
 
 def resample_df(df_m1: pd.DataFrame, rule: str) -> pd.DataFrame:
