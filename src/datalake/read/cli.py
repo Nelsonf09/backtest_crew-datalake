@@ -1,55 +1,51 @@
-import argparse, os, sys
-import pandas as pd
-from .reader import read_range
-from .mtf import load_and_align
+import argparse, os
+from .api import read_range_df, join_mtf_exec_ctx
 
+def _cmd_read(a):
+    df = read_range_df(a.lake_root, market=a.market, tf=a.tf, symbol=a.symbol, date_from=a.date_from, date_to=a.date_to, source=a.source)
+    if a.head:
+        print(df.head(a.head))
+    if a.out_csv:
+        df.to_csv(a.out_csv, index=False)
+
+def _cmd_join(a):
+    ctx = [t.strip() for t in a.ctx_tf.split(',') if t.strip()]
+    df = join_mtf_exec_ctx(a.lake_root, symbol=a.symbol, market=a.market, exec_tf=a.exec_tf, ctx_tfs=ctx, date_from=a.date_from, date_to=a.date_to, source=a.source, suffix_close_only=True)
+    if a.head:
+        print(df.head(a.head))
+    if a.out_csv:
+        df.to_csv(a.out_csv, index=False)
 
 def main():
-    ap = argparse.ArgumentParser(prog="datalake-read")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest='cmd', required=True)
+    r = sub.add_parser('read')
+    r.add_argument('--lake-root', required=True)
+    r.add_argument('--market', required=True)
+    r.add_argument('--tf', required=True)
+    r.add_argument('--symbol', required=True)
+    r.add_argument('--date-from', required=True)
+    r.add_argument('--date-to', required=True)
+    r.add_argument('--source', default='ibkr')
+    r.add_argument('--head', type=int, default=0)
+    r.add_argument('--out-csv')
+    r.set_defaults(func=_cmd_read)
 
-    r = sub.add_parser("read", help="Lee un rango [from,to] por símbolo y TF")
-    r.add_argument("--lake-root", default=os.getenv("LAKE_ROOT", os.getcwd()))
-    r.add_argument("--market", default="crypto")
-    r.add_argument("--tf", required=True)
-    r.add_argument("--symbol", required=True)
-    r.add_argument("--from", dest="date_from", required=True)
-    r.add_argument("--to", dest="date_to", required=True)
-    r.add_argument("--head", type=int, default=0)
-    r.add_argument("--out-csv", default="")
+    j = sub.add_parser('join-mtf')
+    j.add_argument('--lake-root', required=True)
+    j.add_argument('--market', default='crypto')
+    j.add_argument('--symbol', required=True)
+    j.add_argument('--exec-tf', required=True)
+    j.add_argument('--ctx-tf', required=True, help='coma-separado, ej: M5,M15,H1')
+    j.add_argument('--date-from', required=True)
+    j.add_argument('--date-to', required=True)
+    j.add_argument('--source', default='ibkr')
+    j.add_argument('--head', type=int, default=0)
+    j.add_argument('--out-csv')
+    j.set_defaults(func=_cmd_join)
 
-    j = sub.add_parser("join-mtf", help="Join asof entre TF de ejecución y contextos")
-    j.add_argument("--lake-root", default=os.getenv("LAKE_ROOT", os.getcwd()))
-    j.add_argument("--symbol", required=True)
-    j.add_argument("--exec-tf", required=True)
-    j.add_argument("--from", dest="date_from", required=True)
-    j.add_argument("--to", dest="date_to", required=True)
-    j.add_argument("--ctx-tf", default="M5,M15,H1")
-    j.add_argument("--out-csv", default="")
+    a = p.parse_args()
+    a.func(a)
 
-    args = ap.parse_args()
-
-    if args.cmd == "read":
-        df = read_range(args.lake_root, args.market, args.tf, args.symbol, args.date_from, args.date_to)
-        if args.head:
-            print(df.head(args.head))
-        else:
-            print(df.shape)
-        if args.out_csv:
-            df.to_csv(args.out_csv, index=False)
-            print("CSV escrito en:", args.out_csv)
-        return 0
-
-    if args.cmd == "join-mtf":
-        ctx_list = [t.strip() for t in args.ctx_tf.split(",") if t.strip()]
-        _, _, joined = load_and_align(args.lake_root, args.symbol, args.exec_tf, args.date_from, args.date_to, ctx_list)
-        print(joined.shape)
-        if args.out_csv:
-            joined.to_csv(args.out_csv, index=False)
-            print("CSV escrito en:", args.out_csv)
-        return 0
-
-    return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__':
+    main()
