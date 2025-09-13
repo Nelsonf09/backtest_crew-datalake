@@ -1,0 +1,55 @@
+import argparse, glob, os
+import pandas as pd
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--lake-root", default=os.getenv("LAKE_ROOT", os.getcwd()))
+    ap.add_argument("--symbol", required=True, help="BTC-USD, ETH-USD, etc.")
+    ap.add_argument("--date", required=True, help="YYYY-MM-DD (UTC)")
+    ap.add_argument("--timeframe", default="M1")
+    ap.add_argument("--market", default="crypto")
+    args = ap.parse_args()
+
+    base = os.path.join(
+        args.lake_root,
+        "data",
+        "source=ibkr",
+        f"market={args.market}",
+        f"timeframe={args.timeframe}",
+        f"symbol={args.symbol}",
+    )
+    yy = args.date[:4]
+    mm = args.date[5:7]
+    patt = [
+        os.path.join(base, f"year={yy}", f"month={mm}", "*.parquet"),
+        # por si la fecha cae cerca del borde de mes anterior/siguiente
+        os.path.join(base, f"year={yy}", "month=*", "*.parquet"),
+    ]
+    files = []
+    for p in patt:
+        files.extend(glob.glob(p))
+    if not files:
+        print("No se hallaron archivos parquet para el patrón:", patt[0])
+        return 1
+
+    df = pd.concat((pd.read_parquet(f) for f in sorted(set(files))), ignore_index=True)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+
+    start = pd.Timestamp(args.date + " 00:00:00+00:00")
+    end = pd.Timestamp(args.date + " 23:59:00+00:00")
+    d = df[(df["ts"] >= start) & (df["ts"] <= end)].sort_values("ts").copy()
+
+    print("rows:", len(d), "| range:", d["ts"].min(), "->", d["ts"].max())
+
+    full = pd.date_range(start, end, freq="1min")
+    missing = full.difference(pd.DatetimeIndex(d["ts"]))
+    print("missing_minutes:", len(missing))
+    if len(missing):
+        print(missing[:10])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
