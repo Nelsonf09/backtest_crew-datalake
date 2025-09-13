@@ -47,15 +47,19 @@ def _crypto_contract(symbol: str, exchange: str = "PAXOS") -> Contract:
     return Contract(secType="CRYPTO", symbol=base, currency=quote, exchange=exchange)
 
 
-def _day_chunks_utc(day_utc: datetime, chunk_hours: int = CHUNK_HOURS):
-    day_utc = day_utc.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end_day = day_utc.replace(hour=23, minute=59, second=0, microsecond=0)
+def _day_chunks_utc(day: datetime, hours: int = CHUNK_HOURS):
+    start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    end = start + timedelta(days=1) - timedelta(minutes=1)  # 23:59 inclusivo
     chunks = []
-    cur = day_utc
-    while cur < end_day:
-        nxt = min(cur + timedelta(hours=chunk_hours), end_day)
+    cur = start
+    while cur <= end:
+        nxt = min(cur + timedelta(hours=hours) - timedelta(minutes=1), end)
         chunks.append((cur, nxt))
-        cur = nxt + timedelta(minutes=1)  # evitar solape de un minuto
+        cur = nxt + timedelta(minutes=1)
+    logging.info(
+        "IBKR chunks UTC: %s",
+        [(a.strftime("%H:%M"), b.strftime("%H:%M")) for a, b in chunks],
+    )
     return chunks
 
 
@@ -67,56 +71,40 @@ def _fetch_window(
     what_to_show: str,
     timeframe: str,
     use_rth: bool,
+    single_day_fast: bool = False,
 ) -> pd.DataFrame:
-    dfs: List[pd.DataFrame] = []
-    cur_end = end_utc
     bar_size = BAR_SIZES.get(timeframe, "1 min")
-    bar_sec = BAR_SIZE_SECONDS.get(bar_size, 60)
-    while cur_end >= start_utc:
-        cur_start = max(
-            start_utc,
-            cur_end - timedelta(hours=BACKFILL_SLICE_HOURS) + timedelta(seconds=bar_sec),
-        )
-        seconds = int((cur_end - cur_start).total_seconds()) + bar_sec
-        seconds = max(bar_sec, seconds)
-        duration_str = (
-            "1 D" if bar_size == "1 min" and seconds >= 24 * 60 * 60 else f"{seconds} S"
-        )
-        end_str = cur_end.strftime("%Y%m%d %H:%M:%S UTC")
-        logger.debug(
-            "reqHistoricalData duration=%s barSize=%s end=%s",
-            duration_str,
-            bar_size,
-            end_str,
-        )
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime=end_str,
-            durationStr=duration_str,
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=int(use_rth),
-            formatDate=2,
-            keepUpToDate=False,
-        )
-        if bars:
-            df = pd.DataFrame(b.__dict__ for b in bars)[
-                ["date", "open", "high", "low", "close", "volume"]
-            ]
-            df["ts"] = pd.to_datetime(df["date"], utc=True)
-            df = df.drop(columns=["date"]).sort_values("ts")
-            df = df[(df["ts"] >= start_utc) & (df["ts"] <= end_utc)]
-            if not df.empty:
-                dfs.append(df)
-        cur_end = cur_start - timedelta(seconds=bar_sec)
-    if not dfs:
-        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
-    out = (
-        pd.concat(dfs, ignore_index=True)
-        .drop_duplicates(subset=["ts"], keep="last")
-        .sort_values("ts")
+    end_inclusive = end_utc + timedelta(minutes=1)
+    seconds = int((end_inclusive - start_utc).total_seconds())
+    duration_str = (
+        "1 D" if single_day_fast and timeframe == "M1" else f"{seconds} S"
     )
-    return out
+    end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
+    logger.debug(
+        "reqHistoricalData duration=%s barSize=%s end=%s",
+        duration_str,
+        bar_size,
+        end_str,
+    )
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime=end_str,
+        durationStr=duration_str,
+        barSizeSetting=bar_size,
+        whatToShow=what_to_show,
+        useRTH=int(use_rth),
+        formatDate=2,
+        keepUpToDate=False,
+    )
+    if not bars:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    df = pd.DataFrame(b.__dict__ for b in bars)[
+        ["date", "open", "high", "low", "close", "volume"]
+    ]
+    df["ts"] = pd.to_datetime(df["date"], utc=True)
+    df = df.drop(columns=["date"]).sort_values("ts")
+    df = df[(df["ts"] >= start_utc) & (df["ts"] <= end_utc)]
+    return df
 
 
 def _resample(pdf: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -169,6 +157,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     exchange = args.exchange
     what = args.what
     rth = bool(args.rth)
+    same_day = d0.date() == d1.date()
 
     lake_root = data_root or os.getenv("LAKE_ROOT", os.getcwd())
 
@@ -210,19 +199,39 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 )
             else:
                 all_dfs: List[pd.DataFrame] = []
-                for start_utc, end_utc in _day_chunks_utc(cur, CHUNK_HOURS):
+                fast = (
+                    os.getenv("DATALAKE_IBKR_SINGLE_DAY_FASTPATH", "0") == "1"
+                    and same_day
+                    and tf == "M1"
+                )
+                if fast:
                     cont = _crypto_contract(sym, exchange=exchange)
                     dfw = _fetch_window(
                         ib,
                         cont,
-                        start_utc,
-                        end_utc,
+                        cur,
+                        cur + timedelta(days=1) - timedelta(minutes=1),
                         what_to_show=what,
                         timeframe=tf,
                         use_rth=rth,
+                        single_day_fast=True,
                     )
                     if not dfw.empty:
                         all_dfs.append(dfw)
+                else:
+                    for start_utc, end_utc in _day_chunks_utc(cur, CHUNK_HOURS):
+                        cont = _crypto_contract(sym, exchange=exchange)
+                        dfw = _fetch_window(
+                            ib,
+                            cont,
+                            start_utc,
+                            end_utc,
+                            what_to_show=what,
+                            timeframe=tf,
+                            use_rth=rth,
+                        )
+                        if not dfw.empty:
+                            all_dfs.append(dfw)
                 if not all_dfs:
                     logger.warning("no bars %s %s", sym, cur.date())
                     cur = (cur + timedelta(days=1)).replace(
