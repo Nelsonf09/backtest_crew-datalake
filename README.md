@@ -143,3 +143,24 @@ python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root C:\
 **Notas**
 - Reingestar el mismo rango es idempotente (deduplicación por `ts`).
 - Si usaste datos sintéticos para rellenar, puedes borrar el `part-YYYY-MM.parquet` antes de reingestar o configurar el writer para preferir `keep='last'`.
+
+## Fase 4 — Reader + Multi-TF join
+
+**Objetivo**: consumir datos del datalake sin IB y alinear contextos (M5/M15/H1) con el TF de ejecución.
+
+### Uso rápido (PowerShell)
+```powershell
+$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
+
+# Leer rango
+python -m datalake.read.cli read --lake-root $env:LAKE_ROOT --market crypto --tf M1 --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --head 5
+
+# Join multi-TF
+python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD --exec-tf M1 --from 2025-08-01 --to 2025-08-01 --ctx-tf M5,M15,H1 --out-csv mtf_join.csv
+```
+
+### Documentación
+- `docs/usage/layout.md`
+- `docs/usage/reader.md`
+- `docs/usage/mtf.md`
+- `docs/usage/troubleshooting.md`
