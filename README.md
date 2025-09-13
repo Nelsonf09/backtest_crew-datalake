@@ -80,3 +80,66 @@ python -m bridge.backtest_crew.cli --symbol BTC-USD --from 2025-07-01 --to 2025-
 ```
 Más info: [`docs/usage/phase3_offline_bridge.md`](docs/usage/phase3_offline_bridge.md)
 
+## Uso detallado
+
+### Fase 2 — Resample desde M1 (offline con datos sintéticos)
+
+> Objetivo: validar pipeline de resampling M1→M5/M15/H1 sin depender de IB.
+
+**Preparación**
+```powershell
+# PowerShell
+$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
+$env:IB_EXCHANGE_CRYPTO = "PAXOS"
+$env:IB_WHAT_TO_SHOW    = "AGGTRADES"
+```
+
+**Generar M1 sintético (ej. 3 días)**
+```powershell
+python .\\tools\\synth_gen.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03
+```
+
+**Validar M1 por día**
+```powershell
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root C:\\work\\backtest_crew-datalake
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-02 --lake-root C:\\work\\backtest_crew-datalake
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-03 --lake-root C:\\work\\backtest_crew-datalake
+```
+
+**Resample M1 → M5,M15,H1**
+```powershell
+python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --to-tf M5,M15,H1
+```
+
+**Checks por TF**
+```powershell
+python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5  --lake-root C:\\work\\backtest_crew-datalake
+python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M15 --lake-root C:\\work\\backtest_crew-datalake
+python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf H1  --lake-root C:\\work\\backtest_crew-datalake
+```
+
+**Demo offline (todo en un paso)**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\\tools\\offline_demo.ps1
+```
+
+### Fase 3 — Ingesta IB (chunking) y validación
+
+> Objetivo: cubrir 24h/día M1 con IB (cuando el servidor esté disponible), en 3 ventanas de 8h (00–08, 08–16, 16–24) con subtramos robustos.
+
+**Ingesta con chunking**
+```powershell
+$env:LAKE_ROOT="C:\\work\\backtest_crew-datalake"
+$env:IB_HOST="127.0.0.1"; $env:IB_PORT="7497"; $env:IB_CLIENT_ID="1"
+$env:IB_EXCHANGE_CRYPTO="PAXOS"; $env:IB_WHAT_TO_SHOW="AGGTRADES"
+python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
+```
+
+**Validación de día completo**
+```powershell
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root C:\\work\\backtest_crew-datalake
+```
+
+**Notas**
+- Reingestar el mismo rango es idempotente (deduplicación por `ts`).
+- Si usaste datos sintéticos para rellenar, puedes borrar el `part-YYYY-MM.parquet` antes de reingestar o configurar el writer para preferir `keep='last'`.
