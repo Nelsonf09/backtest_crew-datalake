@@ -23,3 +23,8 @@ python .\\tools\\check_mtf.py  --symbol BTC-USD --date 2025-08-01 --tf M5 --lake
 - Verificar huecos con `check_day.py` antes de resample.
 - Las operaciones son idempotentes: reingestión y resample no generan duplicados.
 
+### IB Error 321
+Si IB devuelve `Error 321` por `duration format`, revisa la versión del ingestor.
+Las solicitudes ahora expresan la duración en segundos (`"{N} S"`) o usan
+`"1 D"` para ventanas diarias de M1, evitando la unidad `H`.
+
