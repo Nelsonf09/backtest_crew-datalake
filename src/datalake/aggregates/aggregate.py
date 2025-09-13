@@ -5,7 +5,9 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-_RULES = {'M5':'5min','M15':'15min','H1':'60min','D1':'1D'}
+# Reglas de resampleo por timeframe
+# M5='5min', M15='15min', H1='1h', D1='1d'
+_RULES = {'M5':'5min','M15':'15min','H1':'1h','D1':'1d'}
 
 
 def _dest_path(cfg: LakeConfig, symbol: str, tf: str, year: int, month: int) -> Path:
@@ -14,12 +16,7 @@ def _dest_path(cfg: LakeConfig, symbol: str, tf: str, year: int, month: int) -> 
 
 
 def _agg(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    df = df.copy()
-    df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    df = df.set_index('ts')
-    res = (df.resample(rule, label='left', closed='left')
-             .agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}))
-    res = res.dropna(subset=['open','high','low','close']).reset_index()
+    res = resample_df(df, rule)
     res['source'] = 'ibkr'; res['market'] = 'crypto'
     if 'symbol' in df.columns and not df['symbol'].empty:
         res['symbol'] = df['symbol'].iloc[-1]
@@ -29,12 +26,21 @@ def _agg(df: pd.DataFrame, rule: str) -> pd.DataFrame:
 
 
 def resample_df(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Resample minute-level OHLCV data using the given pandas rule."""
+    """Resample minuto M1 OHLCV a otra frecuencia.
+
+    - Localiza/convierte ``ts`` a UTC.
+    - Ordena por índice y elimina duplicados.
+    - Usa ``label='left', closed='left'`` para alinear a la izquierda.
+    - Forward-fill de columnas OHLC para continuidad.
+    """
     df = df.copy()
     df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    df = df.set_index('ts')
+    df = (df.set_index('ts')
+            .sort_index()
+            .loc[lambda x: ~x.index.duplicated(keep='last')])
     res = (df.resample(rule, label='left', closed='left')
              .agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}))
+    res[['open','high','low','close']] = res[['open','high','low','close']].ffill()
     res = res.dropna(subset=['open','high','low','close']).reset_index()
     return res
 
