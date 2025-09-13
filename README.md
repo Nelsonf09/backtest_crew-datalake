@@ -34,6 +34,20 @@ levels/
 - Niveles diarios **estrechos**: `session_date`, `pdh/pdl/pdc` (D-1), `or_start_utc/or_end_utc`, `orh/orl`.
 - **Crypto**: `what_to_show=AGGTRADES`, 24/7, sin RTH.
 
+## Quickstart (PowerShell)
+```powershell
+python -m venv .venv; .\\.venv\Scripts\Activate
+pip install -r requirements.txt
+$env:LAKE_ROOT="C:\\work\\backtest_crew-datalake"
+$env:IB_HOST="127.0.0.1"
+$env:IB_PORT="7497"
+$env:IB_CLIENT_ID="1"
+python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
+python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-01 --to-tf M5
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root $env:LAKE_ROOT
+python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5 --lake-root $env:LAKE_ROOT
+```
+
 ## Próximas fases
 - Fase 1: Ingesta offline M1 (BTC-USD, ETH-USD) y validación.
 - Fase 2: Agregados (M5/M15/H1/D1) y niveles diarios.
@@ -175,6 +189,12 @@ python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD
 | 3    | Idempotencia/merge seguro en escritor (Parquet mensual) + normalización de esquema | ✅ Completado |
 | 4    | Reader API + Alineación Multi-TF (asof) + CLIs y docs | ✅ Completado |
 
+## Ramas activas
+| Rama   | Alcance |
+|--------|---------|
+| phase-3 | Ingesta M1, agregados y validadores básicos |
+| phase-4 | CLI endurecida, agregador robusto y documentación extendida |
+
 ### Quickstart (PowerShell)
 ```powershell
 # 1) Instalar en editable
@@ -207,6 +227,7 @@ python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD
 - `docs/usage/phase2.md`
 - `docs/usage/phase3.md`
 - `docs/usage/phase4.md`
+- `docs/usage/phase-4.md`
 - `docs/usage/reader.md`
 - `docs/usage/mtf.md`
 - `docs/usage/tools.md`
