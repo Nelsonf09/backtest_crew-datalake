@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime, timezone
-from tools.resample_from_m1 import resample_df
+from datalake.aggregates.aggregate import resample_df
 
 
 def test_resample_counts():

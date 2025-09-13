@@ -1,0 +1,25 @@
+name: smoke
+on: [push, pull_request]
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --recursive || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -U pip
+      - run: pip install -r requirements.txt pytest
+      - name: Run tests
+        env:
+          PYTHONPATH: "src:."
+        run: pytest -q
+      - name: Sanity config
+        env:
+          PYTHONPATH: "src:."
+        run: python -c "from datalake.config import LakeConfig; print(LakeConfig())"
+      - name: Validate layout
+        env:
+          PYTHONPATH: "src:."
+        run: python src/datalake/validate_layout.py true

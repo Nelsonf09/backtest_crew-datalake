@@ -17,7 +17,7 @@ def _agg(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     df = df.copy()
     df['ts'] = pd.to_datetime(df['ts'], utc=True)
     df = df.set_index('ts')
-    res = (df.resample(rule, label='right', closed='right')
+    res = (df.resample(rule, label='left', closed='left')
              .agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}))
     res = res.dropna(subset=['open','high','low','close']).reset_index()
     res['source'] = 'ibkr'; res['market'] = 'crypto'
@@ -26,6 +26,17 @@ def _agg(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     if 'exchange' in df.columns and not df['exchange'].empty:
         res['exchange'] = df['exchange'].iloc[-1]
     return res[['ts','open','high','low','close','volume','source','market','symbol','exchange']]
+
+
+def resample_df(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Resample minute-level OHLCV data using the given pandas rule."""
+    df = df.copy()
+    df['ts'] = pd.to_datetime(df['ts'], utc=True)
+    df = df.set_index('ts')
+    res = (df.resample(rule, label='left', closed='left')
+             .agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}))
+    res = res.dropna(subset=['open','high','low','close']).reset_index()
+    return res
 
 
 def write_month_aggregate(df: pd.DataFrame, symbol: str, tf: str, cfg: LakeConfig) -> Path:
