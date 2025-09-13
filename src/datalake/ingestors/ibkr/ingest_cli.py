@@ -22,6 +22,14 @@ BAR_SIZES = {
     "D1": "1 day",
 }
 
+BAR_SIZE_SECONDS = {
+    "1 min": 60,
+    "5 mins": 5 * 60,
+    "15 mins": 15 * 60,
+    "1 hour": 60 * 60,
+    "1 day": 24 * 60 * 60,
+}
+
 RESAMPLE_FREQ = {
     "M1": "1min",
     "M5": "5min",
@@ -63,15 +71,31 @@ def _fetch_window(
     dfs: List[pd.DataFrame] = []
     cur_end = end_utc
     bar_size = BAR_SIZES.get(timeframe, "1 min")
+    bar_sec = BAR_SIZE_SECONDS.get(bar_size, 60)
     while cur_end >= start_utc:
-        dur = f"{BACKFILL_SLICE_HOURS} H"
+        cur_start = max(
+            start_utc,
+            cur_end - timedelta(hours=BACKFILL_SLICE_HOURS) + timedelta(seconds=bar_sec),
+        )
+        seconds = int((cur_end - cur_start).total_seconds()) + bar_sec
+        seconds = max(bar_sec, seconds)
+        duration_str = (
+            "1 D" if bar_size == "1 min" and seconds >= 24 * 60 * 60 else f"{seconds} S"
+        )
+        end_str = cur_end.strftime("%Y%m%d %H:%M:%S UTC")
+        logger.debug(
+            "reqHistoricalData duration=%s barSize=%s end=%s",
+            duration_str,
+            bar_size,
+            end_str,
+        )
         bars = ib.reqHistoricalData(
             contract,
-            endDateTime=cur_end,
-            durationStr=dur,
+            endDateTime=end_str,
+            durationStr=duration_str,
             barSizeSetting=bar_size,
             whatToShow=what_to_show,
-            useRTH=use_rth,
+            useRTH=int(use_rth),
             formatDate=2,
             keepUpToDate=False,
         )
@@ -84,7 +108,7 @@ def _fetch_window(
             df = df[(df["ts"] >= start_utc) & (df["ts"] <= end_utc)]
             if not df.empty:
                 dfs.append(df)
-        cur_end = cur_end - timedelta(hours=BACKFILL_SLICE_HOURS)
+        cur_end = cur_start - timedelta(seconds=bar_sec)
     if not dfs:
         return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
     out = (

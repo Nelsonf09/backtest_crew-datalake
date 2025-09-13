@@ -218,6 +218,7 @@ python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5 --lake-
 python -m datalake.read.cli read --lake-root $env:LAKE_ROOT --market crypto --tf M1 --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --head 5
 python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD --exec-tf M1 --from 2025-08-01 --to 2025-08-01 --ctx-tf M5,M15,H1 --out-csv mtf_join.csv
 ```
+> **IB Error 321**: el ingestor ahora expresa la duración en segundos o usa `"1 D"` para ventanas diarias de M1, evitando la unidad `H` que IB rechaza.
 
 ### Documentación
 - `docs/overview.md`
