@@ -164,3 +164,50 @@ python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD
 - `docs/usage/reader.md`
 - `docs/usage/mtf.md`
 - `docs/usage/troubleshooting.md`
+
+## Estado de Fases
+
+| Fase | Objetivo | Estado |
+|------|----------|--------|
+| 0    | Estructura básica del repo, convenciones, CI mínimo | ✅ Completado |
+| 1    | Ingesta desde IBKR (crypto, AGGTRADES/PAXOS) + CLI básica | ✅ Completado |
+| 2    | Datos sintéticos M1 + resample a M5/M15/H1 + validadores | ✅ Completado |
+| 3    | Idempotencia/merge seguro en escritor (Parquet mensual) + normalización de esquema | ✅ Completado |
+| 4    | Reader API + Alineación Multi-TF (asof) + CLIs y docs | ✅ Completado |
+
+### Quickstart (PowerShell)
+```powershell
+# 1) Instalar en editable
+python -m pip install -e .
+
+# 2) Variables base
+$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
+$env:IB_HOST = "127.0.0.1"; $env:IB_PORT = "7497"; $env:IB_CLIENT_ID = "1"
+$env:IB_EXCHANGE_CRYPTO = "PAXOS"; $env:IB_WHAT_TO_SHOW = "AGGTRADES"
+
+# 3) Ingesta (si IB está disponible)
+python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
+
+# 4) (Offline) Sintético + Resample + Checks
+python .\\tools\\synth_gen.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03
+python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --to-tf M5,M15,H1
+python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root $env:LAKE_ROOT
+python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5 --lake-root $env:LAKE_ROOT
+
+# 5) Lectura y Join Multi-TF
+python -m datalake.read.cli read --lake-root $env:LAKE_ROOT --market crypto --tf M1 --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --head 5
+python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD --exec-tf M1 --from 2025-08-01 --to 2025-08-01 --ctx-tf M5,M15,H1 --out-csv mtf_join.csv
+```
+
+### Documentación
+- `docs/overview.md`
+- `docs/usage/layout.md`
+- `docs/usage/phase0.md`
+- `docs/usage/phase1.md`
+- `docs/usage/phase2.md`
+- `docs/usage/phase3.md`
+- `docs/usage/phase4.md`
+- `docs/usage/reader.md`
+- `docs/usage/mtf.md`
+- `docs/usage/tools.md`
+- `docs/usage/troubleshooting.md`
