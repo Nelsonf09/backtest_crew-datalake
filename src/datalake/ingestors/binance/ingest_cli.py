@@ -81,6 +81,8 @@ def ingest(args: argparse.Namespace) -> None:
         for day in _days_iter(args.date_from, args.date_to):
             start = _dt_utc(day, 0, 0, 0)
             end   = _dt_utc(day, 23, 59, 0)
+
+            # Llamada ya paginada
             df = fetch_klines(
                 symbol=b_sym,
                 start_dt=start,
@@ -88,14 +90,21 @@ def ingest(args: argparse.Namespace) -> None:
                 tf=args.tf,
                 region=args.binance_region
             )
+
             df = _add_control_cols(df, sym, args.tf, args.binance_region)
+
             if df is not None and not df.empty:
                 write_merge_dedupe(df)
+
+            # Validación
             exp = _expect_rows(args.tf)
             if exp is not None:
                 rows = 0 if df is None else len(df)
                 if rows != exp:
-                    print(f"[WARN] {sym} {day} tf={args.tf}: filas={rows} (esperado={exp})")
+                    # Log claro de cobertura y primeras/últimas marcas
+                    first_ts = None if (df is None or df.empty) else df['ts'].min()
+                    last_ts  = None if (df is None or df.empty) else df['ts'].max()
+                    print(f"[WARN] {sym} {day} tf={args.tf}: filas={rows} (esperado={exp}) range={first_ts}→{last_ts}")
 
 def main() -> int:
     p = argparse.ArgumentParser(description='Ingesta Binance (source=binance) — Phase-4')
