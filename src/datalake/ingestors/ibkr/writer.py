@@ -5,29 +5,34 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# --- Schema y normalización consistentes para escritura Parquet ---
-TEXT_COLS = [
-    "source", "market", "timeframe", "symbol",
-    "exchange", "what_to_show", "vendor", "tz"
+# --- Columnas base y normalización para escritura Parquet ---
+COLS_BASE = [
+    "ts",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "source",
+    "market",
+    "timeframe",
+    "symbol",
+    "exchange",
+    "what_to_show",
+    "vendor",
+    "tz",
 ]
 
-SCHEMA = pa.schema([
-    pa.field("ts", pa.timestamp("us", tz="UTC")),
-    pa.field("open", pa.float64()),
-    pa.field("high", pa.float64()),
-    pa.field("low", pa.float64()),
-    pa.field("close", pa.float64()),
-    pa.field("volume", pa.float64()),
-    pa.field("source", pa.string()),
-    pa.field("market", pa.string()),
-    pa.field("timeframe", pa.string()),
-    pa.field("symbol", pa.string()),
-    pa.field("exchange", pa.string()),
-    pa.field("what_to_show", pa.string()),
-    pa.field("vendor", pa.string()),
-    pa.field("tz", pa.string()),
-    pa.field("is_synth", pa.bool_()),
-])
+TEXT_COLS = [
+    "source",
+    "market",
+    "timeframe",
+    "symbol",
+    "exchange",
+    "what_to_show",
+    "vendor",
+    "tz",
+]
 
 # -- Asegurar metadatos requeridos antes del schema --
 def _val(obj, *names, default=None):
@@ -78,8 +83,6 @@ def _ensure_metadata(pdf: pd.DataFrame, symbol: str, cfg) -> pd.DataFrame:
                 pdf[k] = pdf[k].fillna(v)
             except Exception:
                 pdf[k] = v
-    if "is_synth" not in pdf.columns:
-        pdf["is_synth"] = False
     return pdf
 
 
@@ -102,24 +105,19 @@ def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf
 
 
-def _to_table(pdf: pd.DataFrame, symbol: str, cfg) -> pa.Table:
-    # Asegura metadatos requeridos y normaliza tipos antes de fijar el schema
-    # Evita KeyError por columnas ausentes como 'timeframe'
-    pdf = _ensure_metadata(pdf, symbol=symbol, cfg=cfg)
-    pdf = _normalize_schema_pdf(pdf)
-    return pa.Table.from_pandas(pdf, schema=SCHEMA, preserve_index=False)
-
-
 def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
     """Escribe/actualiza el part-YYYY-MM.parquet forzando schema consistente
     (strings planos, sin dictionary). Devuelve la ruta del archivo escrito.
     """
     import pathlib
 
-    # Normaliza y determina año/mes a partir de ts UTC
-    pdf = _normalize_schema_pdf(pdf)
-    year = int(pd.Series(pdf["ts"]).dt.year.mode().iloc[0])
-    month = int(pd.Series(pdf["ts"]).dt.month.mode().iloc[0])
+    # Asegura metadatos y normaliza tipos antes de operar
+    pdf_new = _ensure_metadata(pdf, symbol=symbol, cfg=cfg)
+    pdf_new = _normalize_schema_pdf(pdf_new)
+
+    # Determina año/mes a partir de ts UTC
+    year = int(pd.Series(pdf_new["ts"]).dt.year.mode().iloc[0])
+    month = int(pd.Series(pdf_new["ts"]).dt.month.mode().iloc[0])
 
     data_root = getattr(cfg, "data_root", getattr(cfg, "root", "."))
     market = getattr(cfg, "market", "crypto")
@@ -136,30 +134,36 @@ def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
     )
     base.mkdir(parents=True, exist_ok=True)
     dest_file = base / f"part-{year}-{month:02d}.parquet"
-
-    # Tabla nueva ya con schema consistente
-    new_tbl = _to_table(pdf, symbol=symbol, cfg=cfg)
-
+    existing_pdf = pd.DataFrame()
     if dest_file.exists():
-        # Leer SOLO este archivo, no como dataset de carpeta
         existing_tbl = pq.ParquetFile(dest_file).read()
-        # Castear al schema fuerte (convierte dictionary->string si hace falta)
-        try:
-            existing_tbl = existing_tbl.cast(SCHEMA)
-        except Exception:
-            # Si falla cast directo, baja a pandas y reconstituye
-            existing_pdf = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
-            existing_pdf = _normalize_schema_pdf(existing_pdf)
-            existing_tbl = pa.Table.from_pandas(existing_pdf, schema=SCHEMA, preserve_index=False)
+        existing_pdf = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+        existing_pdf = _normalize_schema_pdf(existing_pdf)
 
-        # Concatena en pandas para poder deduplicar por ts y ordenar
-        pdf_old = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
-        pdf_new = new_tbl.to_pandas(types_mapper=pd.ArrowDtype)
-        pdf_all = pd.concat([pdf_old, pdf_new], ignore_index=True)
-        pdf_all = pdf_all.drop_duplicates(subset=["ts"]).sort_values("ts")
-        out_tbl = pa.Table.from_pandas(pdf_all, schema=SCHEMA, preserve_index=False)
+    # Alinea columnas opcionales como 'is_synth'
+    has_synth = ("is_synth" in pdf_new.columns) or ("is_synth" in existing_pdf.columns)
+    if has_synth:
+        if "is_synth" not in pdf_new.columns:
+            pdf_new["is_synth"] = False
+        if "is_synth" not in existing_pdf.columns:
+            existing_pdf["is_synth"] = False
+        pdf_new["is_synth"] = pdf_new["is_synth"].astype("bool")
+        existing_pdf["is_synth"] = existing_pdf["is_synth"].astype("bool")
+        cols = COLS_BASE + ["is_synth"]
     else:
-        out_tbl = new_tbl
+        if "is_synth" in pdf_new.columns:
+            pdf_new = pdf_new.drop(columns=["is_synth"])
+        if "is_synth" in existing_pdf.columns:
+            existing_pdf = existing_pdf.drop(columns=["is_synth"])
+        cols = COLS_BASE
+
+    if not existing_pdf.empty:
+        pdf_all = pd.concat([existing_pdf[cols], pdf_new[cols]], ignore_index=True)
+    else:
+        pdf_all = pdf_new[cols]
+
+    pdf_all = pdf_all.drop_duplicates(subset=["ts"]).sort_values("ts")
+    out_tbl = pa.Table.from_pandas(pdf_all[cols], preserve_index=False)
 
     # Escribe SIN dictionary encoding para strings (evita futuros conflictos)
     pq.write_table(out_tbl, dest_file, compression="zstd", use_dictionary=False)
