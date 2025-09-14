@@ -39,7 +39,18 @@ El `endDateTime` se construye como `end + 1min` y la duración en segundos.
 El fallback `23:59:59` cubre servidores HMDS que omiten el último minuto al
 cruzar medianoche.
 
+Tras concatenar las 3×8h se ordenan y deduplican las barras. Si el día no
+alcanza las 1440 filas esperadas, se detectan los huecos minuto a minuto y
+solo esos rangos se vuelven a pedir en ventanas exactas de **1 hora**
+(`duration=3600 S`). Cada petición se registra en `DEBUG` mostrando su
+`endDateTime` y `durationStr`.
+
+Ejemplo de reparación manual:
+```bash
+datalake-repair-day --symbol BTC-USD --date 2025-08-01 --tf M1 --exchange PAXOS --what-to-show AGGTRADES
+```
+
 ### Troubleshooting
-Revisar los logs `REQ[A]`/`REQ[B]` y validar 1440 filas con
-`tools/check_day.py`.
+Revisar los logs `REQ[A]`/`REQ[B]` y los `REQ[H]` horarios. Validar siempre
+que el archivo resultante tenga 1440 filas con `tools/check_day.py`.
 

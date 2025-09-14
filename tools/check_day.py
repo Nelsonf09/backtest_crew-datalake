@@ -51,7 +51,20 @@ def main():
     missing = full.difference(pd.DatetimeIndex(d["ts"]))
     print("missing_minutes:", len(missing))
     if len(missing):
-        print(missing[:10])
+        ranges = []
+        s = missing[0]
+        prev = s
+        for ts in missing[1:]:
+            if ts - prev == pd.Timedelta(minutes=1):
+                prev = ts
+            else:
+                ranges.append((s, prev))
+                s = ts
+                prev = ts
+        ranges.append((s, prev))
+        print("missing_ranges:")
+        for a, b in ranges:
+            print(f"  {a.isoformat()} -> {b.isoformat()}")
     return 0
 
 
