@@ -207,15 +207,25 @@ def write_month(pdf_new: pd.DataFrame, symbol: str, cfg) -> str:
         use_dictionary=False,
     )
 
-    existing_rows = 0 if existing_pdf is None else len(existing_pdf)
-    logger.debug(
-        "existing=%s new=%s merged=%s ts=[%s -> %s]",
-        existing_rows,
-        len(pdf_new),
-        len(merged),
-        merged["ts"].iloc[0] if not merged.empty else None,
-        merged["ts"].iloc[-1] if not merged.empty else None,
-    )
+    if cfg and hasattr(cfg, "logger"):
+        def _rng(df: pd.DataFrame) -> tuple:
+            return (df["ts"].min(), df["ts"].max()) if len(df) else (None, None)
+
+        e0, e1 = _rng(existing_pdf) if existing_pdf is not None else (None, None)
+        n0, n1 = _rng(pdf_new)
+        m0, m1 = _rng(merged)
+        cfg.logger.debug(
+            "ibkr.writer: existing=%s new=%s merged=%s | existing_rng=[%s -> %s] new_rng=[%s -> %s] merged_rng=[%s -> %s]",
+            0 if existing_pdf is None else len(existing_pdf),
+            len(pdf_new),
+            len(merged),
+            e0,
+            e1,
+            n0,
+            n1,
+            m0,
+            m1,
+        )
 
     if hasattr(cfg, "__dict__"):
         cfg.last_dest_file = str(dest_file)

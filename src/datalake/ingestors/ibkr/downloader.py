@@ -1,7 +1,12 @@
 import logging
+import os
+from types import SimpleNamespace
+from typing import List
 
 import pandas as pd
 from ib_insync import IB, Contract
+
+from .timeutil import to_utc
 
 logger = logging.getLogger("ibkr.downloader")
 
@@ -95,3 +100,89 @@ def fetch_hist_bars(
         df["ts"].max() if not df.empty else None,
     )
     return df
+
+
+BAR_SIZES = {
+    "M1": "1 min",
+    "H1": "1 hour",
+}
+
+
+def bars_to_df(bars, exchange: str) -> pd.DataFrame:
+    """Convierte lista de barras de ib_insync en DataFrame con ts en UTC."""
+    if not bars:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    df = pd.DataFrame(
+        [
+            {
+                "date": getattr(b, "date", None),
+                "open": float(getattr(b, "open", "nan")),
+                "high": float(getattr(b, "high", "nan")),
+                "low": float(getattr(b, "low", "nan")),
+                "close": float(getattr(b, "close", "nan")),
+                "volume": float(getattr(b, "volume", "nan")),
+            }
+            for b in bars
+        ]
+    )
+    df["ts"] = to_utc(df["date"], exchange)
+    df = df.drop(columns=["date"]).sort_values("ts").reset_index(drop=True)
+    return df
+
+
+def fetch_bars_range(
+    symbol: str,
+    exchange: str,
+    end_dt_utc,
+    duration_seconds: int,
+    timeframe: str,
+    what_to_show: str,
+) -> List[SimpleNamespace]:
+    """Descarga barras históricas para un rango arbitrario.
+
+    Devuelve la lista de barras tal como ``ib_insync`` la proporciona. Si la
+    variable de entorno ``DATALAKE_SYNTH`` es ``"1"`` se generan barras
+    sintéticas para pruebas offline.
+    """
+
+    if os.getenv("DATALAKE_SYNTH") == "1":
+        end = pd.to_datetime(end_dt_utc, utc=True)
+        start = end - pd.Timedelta(seconds=int(duration_seconds))
+        times = pd.date_range(start, end - pd.Timedelta(minutes=1), freq="1min", tz="UTC")
+        return [
+            SimpleNamespace(
+                date=ts.to_pydatetime(),
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                volume=1.0,
+            )
+            for ts in times
+        ]
+
+    from .contracts import make_crypto_contract
+
+    host = os.getenv("IB_HOST", "127.0.0.1")
+    port = int(os.getenv("IB_PORT", "7497"))
+    client_id = int(os.getenv("IB_CLIENT_ID", "1"))
+    ib = IB()
+    ib.connect(host, port, clientId=client_id, timeout=15)
+    try:
+        contract = make_crypto_contract(symbol, exchange=exchange)
+        end_str = end_dt_utc if isinstance(end_dt_utc, str) else end_dt_utc.strftime("%Y%m%d %H:%M:%S UTC")
+        duration_str = f"{int(duration_seconds)} S"
+        bar_size = BAR_SIZES.get(timeframe, timeframe)
+        bars = ib.reqHistoricalData(
+            contract,
+            endDateTime=end_str,
+            durationStr=duration_str,
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=False,
+            formatDate=2,
+            keepUpToDate=False,
+        )
+        return bars
+    finally:
+        ib.disconnect()
