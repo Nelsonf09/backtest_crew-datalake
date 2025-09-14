@@ -51,3 +51,47 @@ def download_window(
     ]
     df["ts"] = pd.to_datetime(df["date"], utc=True)
     return df.drop(columns=["date"]).sort_values("ts")
+
+
+def fetch_hist_bars(
+    ib: IB,
+    contract: Contract,
+    end_dt_utc,
+    duration_seconds: int,
+    bar_size: str = "1 min",
+    what: str = "AGGTRADES",
+    rth: bool = False,
+) -> pd.DataFrame:
+    """Perform a HMDS request with explicit parameters.
+
+    Parameters mirror IB's ``reqHistoricalData`` arguments but enforce seconds for
+    ``duration_seconds`` and UTC for ``end_dt_utc``. Returns a dataframe with
+    ``ts`` in UTC alongside OHLCV columns.
+    """
+
+    if isinstance(end_dt_utc, str):
+        end_str = end_dt_utc
+    else:
+        end_str = end_dt_utc.strftime("%Y%m%d %H:%M:%S UTC")
+    duration_str = f"{int(duration_seconds)} S"
+    df = download_window(
+        ib,
+        contract,
+        end_date_time=end_str,
+        duration_str=duration_str,
+        bar_size=bar_size,
+        what_to_show=what,
+        use_rth=rth,
+    )
+    logger.debug(
+        "fetch_hist_bars endDateTime=%s durationStr=%s barSize=%s whatToShow=%s useRTH=%s rows=%d ts_min=%s ts_max=%s",
+        end_str,
+        duration_str,
+        bar_size,
+        what,
+        rth,
+        len(df),
+        df["ts"].min() if not df.empty else None,
+        df["ts"].max() if not df.empty else None,
+    )
+    return df

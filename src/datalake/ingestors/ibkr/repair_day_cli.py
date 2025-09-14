@@ -12,6 +12,7 @@ from datalake.ingestors.ibkr.ingest_cli import (
     BAR_SIZES,
     _find_missing_ranges_utc,
     _hourly_fetch,
+    _synth_fill,
 )
 from datalake.ingestors.ibkr.writer import write_month
 
@@ -31,6 +32,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.getenv("IB_WHAT_TO_SHOW", "AGGTRADES"),
     )
     ap.add_argument("--lake-root", default=os.getenv("LAKE_ROOT", os.getcwd()))
+    ap.add_argument("--allow-synth", action="store_true", help="Relleno sintético")
+    ap.add_argument(
+        "--log-level",
+        choices=["INFO", "DEBUG"],
+        default="INFO",
+        help="Nivel de logging",
+    )
     return ap
 
 
@@ -40,6 +48,9 @@ def repair_day(args) -> str:
     exchange = args.exchange
     what = args.what
     lake_root = args.lake_root
+    allow_synth = bool(getattr(args, "allow_synth", False)) or os.getenv(
+        "ALLOW_SYNTH_FILL"
+    ) == "1"
 
     cfg = LakeConfig()
     cfg.data_root = lake_root
@@ -132,6 +143,9 @@ def repair_day(args) -> str:
         df_new = df_day
 
     df_new = df_new.drop_duplicates(subset=["ts"]).sort_values("ts")
+    if tf == "M1" and len(df_new) != 1440 and allow_synth:
+        df_new = _synth_fill(df_new, day_start)
+        df_new = df_new.drop_duplicates(subset=["ts"]).sort_values("ts")
     if len(df_new) == 1440 and tf == "M1":
         print("day healed")
     else:
@@ -144,6 +158,11 @@ def repair_day(args) -> str:
 
 def main(argv: List[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    level = getattr(logging, args.log_level.upper())
+    logging.basicConfig(level=level)
+    logger.setLevel(level)
+    logging.getLogger("ibkr.ingest").setLevel(level)
+    logging.getLogger("ibkr.downloader").setLevel(level)
     repair_day(args)
     return 0
 

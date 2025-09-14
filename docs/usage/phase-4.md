@@ -41,9 +41,15 @@ cruzar medianoche.
 
 Tras concatenar las 3×8h se ordenan y deduplican las barras. Si el día no
 alcanza las 1440 filas esperadas, se detectan los huecos minuto a minuto y
-solo esos rangos se vuelven a pedir en ventanas exactas de **1 hora**
-(`duration=3600 S`). Cada petición se registra en `DEBUG` mostrando su
-`endDateTime` y `durationStr`.
+se reparan con un fallback de granularidad decreciente: primero bloques de
+**1 hora**, luego **30 min**, **10 min** y finalmente **5 min**. Para cada
+bloque se calcula `endDateTime = end + 1 min` y `duration` en segundos. Cada
+petición se registra en `DEBUG` mostrando `endDateTime`, `durationStr`,
+`barSize`, `whatToShow`, `useRTH` y el rango cubierto.
+
+Si tras estos intentos aún falta data, puede activarse el relleno sintético
+(`--allow-synth` o `ALLOW_SYNTH_FILL=1`) que genera barras planas hasta
+completar las 1440 filas, marcando `is_synth=True` y `volume=0`.
 
 Ejemplo de reparación manual:
 ```bash
@@ -51,6 +57,8 @@ datalake-repair-day --symbol BTC-USD --date 2025-08-01 --tf M1 --exchange PAXOS 
 ```
 
 ### Troubleshooting
-Revisar los logs `REQ[A]`/`REQ[B]` y los `REQ[H]` horarios. Validar siempre
-que el archivo resultante tenga 1440 filas con `tools/check_day.py`.
+Ejecutar con `--log-level DEBUG` para ver cada bloque solicitado y las filas
+recibidas. Ante huecos persistentes puede usarse `--allow-synth`.
+Validar siempre el resultado con `tools/check_day.py`, que ahora también
+reporta rangos faltantes y el conteo de barras sintéticas.
 
