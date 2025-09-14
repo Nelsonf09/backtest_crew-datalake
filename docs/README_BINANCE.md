@@ -28,3 +28,6 @@ python tools/binance_fetch_tail.py \
 - Timestamps tz-aware en UTC.
 - Dedupe/merge idéntico al de IB (clave: symbol, tf, ts, source).
 - Para Binance.US usar `--binance-region us`.
+
+### Límite de 1000 klines por request
+La ingesta pagina el rango diario en subventanas (p. ej., 00:00→16:39 y 16:40→23:59 para M1), mergea y deduplica por `ts`.
