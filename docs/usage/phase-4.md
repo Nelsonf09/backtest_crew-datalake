@@ -51,6 +51,9 @@ Si tras estos intentos aún falta data, puede activarse el relleno sintético
 (`--allow-synth` o `ALLOW_SYNTH_FILL=1`) que genera barras planas hasta
 completar las 1440 filas, marcando `is_synth=True` y `volume=0`.
 
+La columna `is_synth` es opcional: solo aparece cuando se habilita este
+relleno. Para flujos 100% reales, el writer no la añade ni la exige.
+
 Ejemplo de reparación manual:
 ```bash
 datalake-repair-day --symbol BTC-USD --date 2025-08-01 --tf M1 --exchange PAXOS --what-to-show AGGTRADES
@@ -61,4 +64,7 @@ Ejecutar con `--log-level DEBUG` para ver cada bloque solicitado y las filas
 recibidas. Ante huecos persistentes puede usarse `--allow-synth`.
 Validar siempre el resultado con `tools/check_day.py`, que ahora también
 reporta rangos faltantes y el conteo de barras sintéticas.
+
+Si encuentras `KeyError` o `ArrowTypeError` referentes a `is_synth`,
+actualiza a esta versión del writer e instálala en editable (`pip install -e .`).
 
