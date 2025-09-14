@@ -41,6 +41,9 @@ def main():
     d = df[(df["ts"] >= start) & (df["ts"] <= end)].sort_values("ts").copy()
 
     print("rows:", len(d), "| range:", d["ts"].min(), "->", d["ts"].max())
+    per_hour = d.set_index("ts").groupby(d["ts"].dt.hour).size()
+    print("per_hour:")
+    print(per_hour)
 
     full = pd.date_range(start, end, freq="1min")
     missing = full.difference(pd.DatetimeIndex(d["ts"]))
