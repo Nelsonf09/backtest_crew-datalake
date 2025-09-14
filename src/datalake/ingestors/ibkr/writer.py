@@ -25,7 +25,8 @@ SCHEMA = pa.schema([
     pa.field("exchange", pa.string()),
     pa.field("what_to_show", pa.string()),
     pa.field("vendor", pa.string()),
-    pa.field("tz", pa.string())
+    pa.field("tz", pa.string()),
+    pa.field("is_synth", pa.bool_()),
 ])
 
 # -- Asegurar metadatos requeridos antes del schema --
@@ -77,6 +78,8 @@ def _ensure_metadata(pdf: pd.DataFrame, symbol: str, cfg) -> pd.DataFrame:
                 pdf[k] = pdf[k].fillna(v)
             except Exception:
                 pdf[k] = v
+    if "is_synth" not in pdf.columns:
+        pdf["is_synth"] = False
     return pdf
 
 
@@ -94,6 +97,8 @@ def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     for c in TEXT_COLS:
         if c in pdf:
             pdf[c] = pdf[c].astype("string")
+    if "is_synth" in pdf:
+        pdf["is_synth"] = pdf["is_synth"].astype("bool")
     return pdf
 
 

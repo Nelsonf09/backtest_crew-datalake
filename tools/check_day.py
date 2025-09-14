@@ -41,6 +41,9 @@ def main():
     d = df[(df["ts"] >= start) & (df["ts"] <= end)].sort_values("ts").copy()
 
     print("rows:", len(d), "| range:", d["ts"].min(), "->", d["ts"].max())
+    if "is_synth" in d.columns:
+        synth_cnt = int(d["is_synth"].sum())
+        print("synthetic_bars:", synth_cnt)
     per_hour = (
         d.set_index("ts").groupby(d["ts"].dt.hour).size().reindex(range(24), fill_value=0)
     )
@@ -65,6 +68,9 @@ def main():
         print("missing_ranges:")
         for a, b in ranges:
             print(f"  {a.isoformat()} -> {b.isoformat()}")
+            print(
+                f"    first_missing: {a.isoformat()} last_missing: {b.isoformat()}"
+            )
     return 0
 
 

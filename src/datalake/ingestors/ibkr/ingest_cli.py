@@ -9,7 +9,7 @@ from ib_insync import IB, Contract
 
 from datalake.config import LakeConfig
 from datalake.ingestors.ibkr.writer import write_month
-from datalake.ingestors.ibkr.downloader import download_window
+from datalake.ingestors.ibkr.downloader import download_window, fetch_hist_bars
 
 # --- Helpers de contrato, chunking y fetch robusto (2h) ---
 CHUNK_HOURS = 8
@@ -87,6 +87,47 @@ def _find_missing_ranges_utc(df_day: pd.DataFrame) -> List[tuple[datetime, datet
     return ranges
 
 
+def _synth_fill(df_day: pd.DataFrame, day_start: datetime) -> pd.DataFrame:
+    """Fill missing minute bars with flat synthetic data."""
+    full = pd.date_range(
+        day_start,
+        day_start + timedelta(days=1) - timedelta(minutes=1),
+        freq="1min",
+        tz=timezone.utc,
+    )
+    existing = pd.DatetimeIndex(df_day["ts"])
+    missing = full.difference(existing)
+    if missing.empty:
+        return df_day
+    synth_rows = []
+    for ts in missing:
+        prev = df_day[df_day["ts"] < ts]
+        nxt = df_day[df_day["ts"] > ts]
+        if not prev.empty:
+            price = prev.iloc[-1]["close"]
+        elif not nxt.empty:
+            price = nxt.iloc[0]["open"]
+        else:
+            price = 0.0
+        synth_rows.append(
+            {
+                "ts": ts,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0,
+                "is_synth": True,
+            }
+        )
+    df_synth = pd.DataFrame(synth_rows)
+    df_day = pd.concat([df_day, df_synth], ignore_index=True)
+    if "is_synth" not in df_day.columns:
+        df_day["is_synth"] = df_day.get("is_synth", False)
+    df_day["is_synth"] = df_day["is_synth"].fillna(False)
+    return df_day.sort_values("ts")
+
+
 def _hourly_fetch(
     ib: IB,
     symbol: str,
@@ -131,6 +172,51 @@ def _hourly_fetch(
     else:
         out["ts"] = out["ts"].dt.tz_convert("UTC")
     return out[(out["ts"] >= start_utc) & (out["ts"] <= end_utc)]
+
+
+def _repair_range_with_fallback(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    params: dict,
+) -> pd.DataFrame:
+    """Attempt to repair a missing range using decreasing window sizes."""
+    ib: IB = params["ib"]
+    exchange: str = params["exchange"]
+    what: str = params["what"]
+    rth: bool = params["rth"]
+    cont = _crypto_contract(symbol, exchange=exchange)
+    remaining: List[tuple[datetime, datetime]] = [(start, end)]
+    out = pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    for step in [3600, 1800, 600, 300]:
+        new_remaining: List[tuple[datetime, datetime]] = []
+        for rs, re in remaining:
+            cur = rs
+            while cur <= re:
+                block_end = min(cur + timedelta(seconds=step) - timedelta(minutes=1), re)
+                end_incl = block_end + timedelta(minutes=1)
+                duration = int((end_incl - cur).total_seconds())
+                df = fetch_hist_bars(
+                    ib,
+                    cont,
+                    end_incl,
+                    duration,
+                    bar_size="1 min",
+                    what=what,
+                    rth=rth,
+                )
+                if not df.empty:
+                    df = df[(df["ts"] >= cur) & (df["ts"] <= block_end)]
+                    out = pd.concat([out, df], ignore_index=True)
+                else:
+                    new_remaining.append((cur, block_end))
+                cur = block_end + timedelta(minutes=1)
+        if not new_remaining:
+            break
+        remaining = new_remaining
+    if out.empty:
+        return out
+    return out.drop_duplicates("ts").sort_values("ts")
 
 
 def _fetch_with_fallback(
@@ -232,6 +318,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Tipo de datos HMDS",
     )
     ap.add_argument("--rth", action="store_true", help="Usar Regular Trading Hours")
+    ap.add_argument(
+        "--allow-synth",
+        action="store_true",
+        help="Rellenar huecos con barras sintéticas si quedan faltantes",
+    )
     return ap
 
 
@@ -243,6 +334,9 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     exchange = args.exchange
     what = args.what
     rth = bool(args.rth)
+    allow_synth = bool(getattr(args, "allow_synth", False)) or os.getenv(
+        "ALLOW_SYNTH_FILL"
+    ) == "1"
 
     lake_root = data_root or os.getenv("LAKE_ROOT", os.getcwd())
 
@@ -325,24 +419,22 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 missing_ranges: List[tuple[datetime, datetime]] = []
                 if tf == "M1" and len(day_df) != 1440:
                     missing_ranges = _find_missing_ranges_utc(day_df)
+                    common = {
+                        "ib": ib,
+                        "exchange": exchange,
+                        "what": what_final,
+                        "rth": rth,
+                    }
                     for start_m, end_m in missing_ranges:
-                        df_fix = _hourly_fetch(
-                            ib,
-                            sym,
-                            start_m,
-                            end_m,
-                            cfg,
-                            tf,
-                            what_final,
-                            exchange,
-                            rth,
+                        df_fix = _repair_range_with_fallback(
+                            sym, start_m, end_m, common
                         )
                         if not df_fix.empty:
                             day_df = pd.concat([day_df, df_fix], ignore_index=True)
-                    day_df = (
-                        day_df.drop_duplicates(subset=["ts"], keep="first")
-                        .sort_values("ts")
-                    )
+                    day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
+                    if tf == "M1" and len(day_df) != 1440 and allow_synth:
+                        day_df = _synth_fill(day_df, cur)
+                    day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
                 per_hour = (
                     day_df.set_index("ts").groupby(day_df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
                 )
