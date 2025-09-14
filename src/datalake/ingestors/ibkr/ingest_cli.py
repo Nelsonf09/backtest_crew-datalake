@@ -43,6 +43,131 @@ RESAMPLE_FREQ = {
 
 logger = logging.getLogger("ibkr.ingest")
 
+UTC = timezone.utc
+
+
+def _dt(date_str: str) -> datetime:
+    """'YYYY-MM-DD' -> datetime UTC (00:00:00)"""
+    y, m, d = map(int, date_str.split("-"))
+    return datetime(y, m, d, 0, 0, 0, tzinfo=UTC)
+
+
+def _clip_df_to(df: pd.DataFrame | None, start_ts: datetime, end_ts: datetime) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    return df[(df["ts"] >= start_ts) & (df["ts"] <= end_ts)]
+
+
+def _concat_non_empty(out: pd.DataFrame | None, df: pd.DataFrame | None) -> pd.DataFrame:
+    """Concatenate ``df`` into ``out`` skipping empties to silence pandas warnings."""
+    if df is None or df.empty:
+        return out if out is not None else pd.DataFrame()
+    if out is None or out.empty:
+        return df.copy()
+    return pd.concat([out, df], ignore_index=True)
+
+
+def to_dataframe(bars) -> pd.DataFrame:
+    if not bars:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    df = pd.DataFrame(b.__dict__ for b in bars)[
+        ["date", "open", "high", "low", "close", "volume"]
+    ]
+    df["ts"] = pd.to_datetime(df["date"], utc=True)
+    return df.drop(columns=["date"]).sort_values("ts")
+
+
+def _req_historical_with_retry(
+    ib,
+    contract,
+    *,
+    end_dt,
+    duration,
+    bar_size,
+    what_to_show,
+    use_rth,
+    fmt_date: int = 2,
+):
+    try:
+        return ib.reqHistoricalData(
+            contract,
+            endDateTime=end_dt,
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+            formatDate=fmt_date,
+            keepUpToDate=False,
+        )
+    except Exception as e:
+        msg = str(e)
+        needs_agg = ("10299" in msg) and ("AGGTRADES" in msg.upper())
+        if needs_agg and what_to_show.upper() != "AGGTRADES":
+            logging.warning(
+                "IB exige AGGTRADES (10299). Reintentando con whatToShow=AGGTRADES."
+            )
+            return ib.reqHistoricalData(
+                contract,
+                endDateTime=end_dt,
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow="AGGTRADES",
+                useRTH=use_rth,
+                formatDate=fmt_date,
+                keepUpToDate=False,
+            )
+        raise
+
+
+def _fetch_tail_cross_midnight(ib, contract, day_str: str, what_to_show: str, use_rth: int):
+    """Fetch final chunk crossing midnight and clip to 20:00-23:59 UTC of day_str."""
+    D0 = _dt(day_str)
+    end_req = (D0 + timedelta(days=1)).replace(hour=3, minute=59, second=59)
+    duration = "28800 S"  # 8 hours
+    bars = _req_historical_with_retry(
+        ib,
+        contract,
+        end_dt=end_req.strftime("%Y%m%d %H:%M:%S UTC"),
+        duration=duration,
+        bar_size="1 min",
+        what_to_show=what_to_show,
+        use_rth=use_rth,
+    )
+    df = to_dataframe(bars)
+    start_clip = D0.replace(hour=20, minute=0, second=0)
+    end_clip = D0.replace(hour=23, minute=59, second=0)
+    df = _clip_df_to(df, start_clip, end_clip)
+    logging.debug("tail cross-midnight fetched %d rows", 0 if df is None else len(df))
+    return df
+
+
+def _repair_tail_if_missing(
+    ib,
+    contract,
+    day_str: str,
+    what_to_show: str,
+    use_rth: int,
+) -> pd.DataFrame:
+    """Try to recover missing 20:00-23:59 chunk by fetching crossing midnight."""
+    D0 = _dt(day_str)
+    end_req = (D0 + timedelta(days=1)).replace(hour=1, minute=10, second=0)
+    duration = "18000 S"  # 5 hours
+    bars = _req_historical_with_retry(
+        ib,
+        contract,
+        end_dt=end_req.strftime("%Y%m%d %H:%M:%S UTC"),
+        duration=duration,
+        bar_size="1 min",
+        what_to_show=what_to_show,
+        use_rth=use_rth,
+    )
+    df = to_dataframe(bars)
+    start_clip = D0.replace(hour=20, minute=0, second=0)
+    end_clip = D0.replace(hour=23, minute=59, second=0)
+    df = _clip_df_to(df, start_clip, end_clip)
+    logging.debug("tail-repair fetched %d rows", 0 if df is None else len(df))
+    return df
+
 
 def _is_crypto(symbol: str, exchange: str | None) -> bool:
     ex = (exchange or "").upper()
@@ -135,7 +260,7 @@ def _synth_fill(df_day: pd.DataFrame, day_start: datetime) -> pd.DataFrame:
             }
         )
     df_synth = pd.DataFrame(synth_rows)
-    df_day = pd.concat([df_day, df_synth], ignore_index=True)
+    df_day = _concat_non_empty(df_day, df_synth)
     if "is_synth" not in df_day.columns:
         df_day["is_synth"] = df_day.get("is_synth", False)
     df_day["is_synth"] = df_day["is_synth"].fillna(False)
@@ -229,7 +354,7 @@ def _repair_range_with_fallback(
                 )
                 if not df.empty:
                     df = df[(df["ts"] >= cur) & (df["ts"] <= block_end)]
-                    out = pd.concat([out, df], ignore_index=True)
+                    out = _concat_non_empty(out, df)
                 else:
                     new_remaining.append((cur, block_end))
                 cur = block_end + timedelta(minutes=1)
@@ -425,8 +550,10 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     }
                 )
             else:
-                all_dfs: List[pd.DataFrame] = []
-                for start_utc, end_utc in _day_chunks_exact_utc(cur):
+                contract = _crypto_contract(sym, exchange=exchange)
+                all_df = pd.DataFrame()
+                chunks = _day_chunks_exact_utc(cur)
+                for start_utc, end_utc in chunks[:2]:
                     dfw = _fetch_with_fallback(
                         ib,
                         sym,
@@ -459,7 +586,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                                         sym, s_m, e_m, common
                                     )
                                     if not df_fix.empty:
-                                        dfw = pd.concat([dfw, df_fix], ignore_index=True)
+                                        dfw = _concat_non_empty(dfw, df_fix)
                                 dfw = dfw.drop_duplicates("ts").sort_values("ts")
                         logger.debug(
                             "chunk %s %s→%s rows=%d last=%s",
@@ -469,16 +596,26 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                             len(dfw),
                             dfw["ts"].max(),
                         )
-                        all_dfs.append(dfw)
-                if not all_dfs:
+                        all_df = _concat_non_empty(all_df, dfw)
+                try:
+                    df_tail = _fetch_tail_cross_midnight(
+                        ib,
+                        contract,
+                        day_str=cur.strftime("%Y-%m-%d"),
+                        what_to_show=what_final,
+                        use_rth=int(rth_final),
+                    )
+                    all_df = _concat_non_empty(all_df, df_tail)
+                except Exception as e:
+                    logging.warning(f"tail cross-midnight fetch failed: {e}")
+                if all_df is None or all_df.empty:
                     logger.warning("no bars %s %s", sym, cur.date())
                     cur = (cur + timedelta(days=1)).replace(
                         hour=0, minute=0, second=0, microsecond=0
                     )
                     continue
                 day_df = (
-                    pd.concat(all_dfs, ignore_index=True)
-                    .drop_duplicates(subset=["ts"], keep="first")
+                    all_df.drop_duplicates(subset=["ts"], keep="first")
                     .sort_values("ts")
                 )
                 if day_df["ts"].dt.tz is None:
@@ -488,6 +625,33 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 missing_ranges: List[tuple[datetime, datetime]] = []
                 if tf == "M1" and len(day_df) != 1440:
                     missing_ranges = _find_missing_ranges_utc(day_df)
+                    D0 = cur
+                    tail_start = D0.replace(hour=20, minute=0, second=0, microsecond=0)
+                    tail_end = D0.replace(hour=23, minute=59, second=0, microsecond=0)
+                    tail_missing = any(
+                        (s <= tail_start and e >= tail_end) for s, e in missing_ranges
+                    )
+                    if tail_missing:
+                        logging.warning(
+                            "Falta tramo 20:00–23:59; intentando tail-repair..."
+                        )
+                        try:
+                            df_tail_rep = _repair_tail_if_missing(
+                                ib,
+                                contract,
+                                cur.strftime("%Y-%m-%d"),
+                                what_final,
+                                int(rth_final),
+                            )
+                            day_df = _concat_non_empty(day_df, df_tail_rep)
+                            day_df = day_df.drop_duplicates(
+                                subset=["ts"], keep="last"
+                            ).sort_values("ts")
+                        except Exception as e:
+                            logging.warning(
+                                f"tail-repair no pudo completar el tramo 20:00–23:59: {e}"
+                            )
+                        missing_ranges = _find_missing_ranges_utc(day_df)
                     common = {
                         "ib": ib,
                         "exchange": exchange,
@@ -499,13 +663,15 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                             sym, start_m, end_m, common
                         )
                         if not df_fix.empty:
-                            day_df = pd.concat([day_df, df_fix], ignore_index=True)
+                            day_df = _concat_non_empty(day_df, df_fix)
                     day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
                     if tf == "M1" and len(day_df) != 1440 and allow_synth:
                         day_df = _synth_fill(day_df, cur)
                     day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
-                    if any(s.hour == 20 and e.hour == 23 for s, e in missing_ranges):
-                        logger.warning("faltan 4h exactas (20:00-23:59). revisar useRTH")
+                    if tail_missing and len(day_df) == 1440:
+                        logging.info("tail-repair completó el tramo 20:00–23:59.")
+                    elif tail_missing and len(day_df) != 1440:
+                        logging.warning("tail-repair no pudo completar el tramo 20:00–23:59.")
                 if day_df.empty:
                     logger.warning("no bars %s %s", sym, cur.isoformat())
                     cur = (cur + timedelta(days=1)).replace(
@@ -551,6 +717,9 @@ def ingest(args, data_root: str | None = None) -> List[str]:
             day_df["what_to_show"] = what_final
             day_df["vendor"] = "ibkr"
             day_df["tz"] = "UTC"
+            day_df = day_df.drop_duplicates(
+                subset=["symbol", "timeframe", "ts", "source"], keep="last"
+            )
             path = write_month(day_df, symbol=sym, cfg=cfg)
             written.append(path)
             logger.info("end %s %s -> %s", sym, cur.date(), path)
