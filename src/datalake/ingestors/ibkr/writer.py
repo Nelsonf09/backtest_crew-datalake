@@ -26,7 +26,7 @@ COLS_BASE = [
     "tz",
 ]
 
-TEXT_COLS = [
+STR_COLS = [
     "source",
     "market",
     "timeframe",
@@ -100,7 +100,7 @@ def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     if "volume" in pdf:
         pdf["volume"] = pd.to_numeric(pdf["volume"], errors="coerce")
     # strings planos (evitar categoricals/dictionary)
-    for c in TEXT_COLS:
+    for c in STR_COLS:
         if c in pdf:
             pdf[c] = pdf[c].astype("string")
     if "is_synth" in pdf:
@@ -108,19 +108,39 @@ def _normalize_schema_pdf(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf
 
 
-def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
-    """Escribe/actualiza el part-YYYY-MM.parquet forzando schema consistente
-    (strings planos, sin dictionary). Devuelve la ruta del archivo escrito.
+def _to_string(df: pd.DataFrame) -> pd.DataFrame:
+    for c in STR_COLS:
+        if c in df.columns:
+            df[c] = df[c].astype("string")
+    return df
+
+
+def _ensure_synth(df: pd.DataFrame, has_synth: bool) -> pd.DataFrame:
+    if has_synth and "is_synth" not in df.columns:
+        df["is_synth"] = False
+    if has_synth:
+        df["is_synth"] = df["is_synth"].astype(bool)
+    return df
+
+
+def write_month(pdf_new: pd.DataFrame, symbol: str, cfg) -> str:
+    """Escribe/actualiza el parquet mensual para ``symbol`` evitando choques de tipos.
+
+    - Lee el archivo existente como un solo parquet (no dataset) para evitar
+      columnas de partición.
+    - Normaliza columnas de texto y alinea ``is_synth`` en ambos DataFrames.
+    - Deduplica por ``ts`` y escribe desactivando dictionary encoding.
     """
     import pathlib
 
-    # Asegura metadatos y normaliza tipos antes de operar
-    pdf_new = _ensure_metadata(pdf, symbol=symbol, cfg=cfg)
+    pdf_new = _ensure_metadata(pdf_new, symbol=symbol, cfg=cfg)
     pdf_new = _normalize_schema_pdf(pdf_new)
 
-    # Determina año/mes a partir de ts UTC
-    year = int(pd.Series(pdf_new["ts"]).dt.year.mode().iloc[0])
-    month = int(pd.Series(pdf_new["ts"]).dt.month.mode().iloc[0])
+    if pdf_new is None or len(pdf_new) == 0:
+        return getattr(cfg, "last_dest_file", "")
+
+    year = int(pdf_new["ts"].dt.year.iloc[0])
+    month = int(pdf_new["ts"].dt.month.iloc[0])
 
     data_root = getattr(cfg, "data_root", getattr(cfg, "root", "."))
     market = getattr(cfg, "market", "crypto")
@@ -140,39 +160,52 @@ def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
 
     existing_pdf: pd.DataFrame | None = None
     if dest_file.exists():
-        existing_tbl = pq.read_table(dest_file)
-        existing_pdf = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+        try:
+            existing_tbl = pq.ParquetFile(dest_file).read()
+        except Exception:
+            existing_tbl = pq.read_table(dest_file, use_legacy_dataset=True)
+        existing_pdf = existing_tbl.to_pandas()
+
+    pdf_new = _to_string(pdf_new)
+    if existing_pdf is not None:
+        existing_pdf = _to_string(existing_pdf)
 
     has_synth = ("is_synth" in pdf_new.columns) or (
-        "is_synth" in existing_pdf.columns if existing_pdf is not None else False
+        existing_pdf is not None and "is_synth" in existing_pdf.columns
     )
-    if has_synth:
-        if "is_synth" not in pdf_new.columns:
-            pdf_new["is_synth"] = False
-        if existing_pdf is not None and "is_synth" not in existing_pdf.columns:
-            existing_pdf["is_synth"] = False
-        pdf_new["is_synth"] = pdf_new["is_synth"].astype("bool")
-        if existing_pdf is not None:
-            existing_pdf["is_synth"] = existing_pdf["is_synth"].astype("bool")
-        cols = COLS_BASE + ["is_synth"]
-    else:
-        pdf_new = pdf_new.drop(columns=["is_synth"], errors="ignore")
-        if existing_pdf is not None:
-            existing_pdf = existing_pdf.drop(columns=["is_synth"], errors="ignore")
-        cols = COLS_BASE
+    pdf_new = _ensure_synth(pdf_new, has_synth)
+    if existing_pdf is not None:
+        existing_pdf = _ensure_synth(existing_pdf, has_synth)
 
-    for df in [pdf_new] + ([existing_pdf] if existing_pdf is not None else []):
-        if not isinstance(df["ts"].dtype, pd.DatetimeTZDtype) or str(df["ts"].dtype.tz) != "UTC":
-            df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    target_cols = COLS_BASE + (["is_synth"] if has_synth else [])
+
+    for c in target_cols:
+        if c not in pdf_new.columns:
+            pdf_new[c] = pd.Series([None] * len(pdf_new))
+    pdf_new = pdf_new[target_cols]
 
     if existing_pdf is not None:
-        merged = pd.concat([existing_pdf[cols], pdf_new[cols]], ignore_index=True)
-    else:
-        merged = pdf_new[cols]
+        for c in target_cols:
+            if c not in existing_pdf.columns:
+                existing_pdf[c] = pd.Series([None] * len(existing_pdf))
+        existing_pdf = existing_pdf[target_cols]
 
+    if existing_pdf is not None and len(existing_pdf) > 0:
+        merged = pd.concat([existing_pdf, pdf_new], ignore_index=True)
+    else:
+        merged = pdf_new.copy()
+
+    merged["ts"] = pd.to_datetime(merged["ts"], utc=True)
     merged = merged.sort_values("ts").drop_duplicates("ts", keep="last")
-    table = pa.Table.from_pandas(merged[cols], preserve_index=False)
-    pq.write_table(table, dest_file, compression="zstd", version="2.6")
+
+    table = pa.Table.from_pandas(merged, preserve_index=False)
+    pq.write_table(
+        table,
+        dest_file,
+        compression="zstd",
+        version="2.6",
+        use_dictionary=False,
+    )
 
     existing_rows = 0 if existing_pdf is None else len(existing_pdf)
     logger.debug(
@@ -183,6 +216,9 @@ def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
         merged["ts"].iloc[0] if not merged.empty else None,
         merged["ts"].iloc[-1] if not merged.empty else None,
     )
+
+    if hasattr(cfg, "__dict__"):
+        cfg.last_dest_file = str(dest_file)
 
     return str(dest_file)
 
