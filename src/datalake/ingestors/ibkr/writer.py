@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import logging
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+logger = logging.getLogger("ibkr.writer")
 
 # --- Columnas base y normalización para escritura Parquet ---
 COLS_BASE = [
@@ -134,38 +137,52 @@ def write_month(pdf: pd.DataFrame, symbol: str, cfg) -> str:
     )
     base.mkdir(parents=True, exist_ok=True)
     dest_file = base / f"part-{year}-{month:02d}.parquet"
-    existing_pdf = pd.DataFrame()
-    if dest_file.exists():
-        existing_tbl = pq.ParquetFile(dest_file).read()
-        existing_pdf = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
-        existing_pdf = _normalize_schema_pdf(existing_pdf)
 
-    # Alinea columnas opcionales como 'is_synth'
-    has_synth = ("is_synth" in pdf_new.columns) or ("is_synth" in existing_pdf.columns)
+    existing_pdf: pd.DataFrame | None = None
+    if dest_file.exists():
+        existing_tbl = pq.read_table(dest_file)
+        existing_pdf = existing_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+
+    has_synth = ("is_synth" in pdf_new.columns) or (
+        "is_synth" in existing_pdf.columns if existing_pdf is not None else False
+    )
     if has_synth:
         if "is_synth" not in pdf_new.columns:
             pdf_new["is_synth"] = False
-        if "is_synth" not in existing_pdf.columns:
+        if existing_pdf is not None and "is_synth" not in existing_pdf.columns:
             existing_pdf["is_synth"] = False
         pdf_new["is_synth"] = pdf_new["is_synth"].astype("bool")
-        existing_pdf["is_synth"] = existing_pdf["is_synth"].astype("bool")
+        if existing_pdf is not None:
+            existing_pdf["is_synth"] = existing_pdf["is_synth"].astype("bool")
         cols = COLS_BASE + ["is_synth"]
     else:
-        if "is_synth" in pdf_new.columns:
-            pdf_new = pdf_new.drop(columns=["is_synth"])
-        if "is_synth" in existing_pdf.columns:
-            existing_pdf = existing_pdf.drop(columns=["is_synth"])
+        pdf_new = pdf_new.drop(columns=["is_synth"], errors="ignore")
+        if existing_pdf is not None:
+            existing_pdf = existing_pdf.drop(columns=["is_synth"], errors="ignore")
         cols = COLS_BASE
 
-    if not existing_pdf.empty:
-        pdf_all = pd.concat([existing_pdf[cols], pdf_new[cols]], ignore_index=True)
+    for df in [pdf_new] + ([existing_pdf] if existing_pdf is not None else []):
+        if not isinstance(df["ts"].dtype, pd.DatetimeTZDtype) or str(df["ts"].dtype.tz) != "UTC":
+            df["ts"] = pd.to_datetime(df["ts"], utc=True)
+
+    if existing_pdf is not None:
+        merged = pd.concat([existing_pdf[cols], pdf_new[cols]], ignore_index=True)
     else:
-        pdf_all = pdf_new[cols]
+        merged = pdf_new[cols]
 
-    pdf_all = pdf_all.drop_duplicates(subset=["ts"]).sort_values("ts")
-    out_tbl = pa.Table.from_pandas(pdf_all[cols], preserve_index=False)
+    merged = merged.sort_values("ts").drop_duplicates("ts", keep="last")
+    table = pa.Table.from_pandas(merged[cols], preserve_index=False)
+    pq.write_table(table, dest_file, compression="zstd", version="2.6")
 
-    # Escribe SIN dictionary encoding para strings (evita futuros conflictos)
-    pq.write_table(out_tbl, dest_file, compression="zstd", use_dictionary=False)
+    existing_rows = 0 if existing_pdf is None else len(existing_pdf)
+    logger.debug(
+        "existing=%s new=%s merged=%s ts=[%s -> %s]",
+        existing_rows,
+        len(pdf_new),
+        len(merged),
+        merged["ts"].iloc[0] if not merged.empty else None,
+        merged["ts"].iloc[-1] if not merged.empty else None,
+    )
+
     return str(dest_file)
 
