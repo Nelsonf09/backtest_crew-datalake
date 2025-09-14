@@ -1,3 +1,5 @@
+"""Inspecta una partición diaria verificando huecos y filas esperadas."""
+
 import argparse, glob, os
 import pandas as pd
 
@@ -9,6 +11,11 @@ def main():
     ap.add_argument("--date", required=True, help="YYYY-MM-DD (UTC)")
     ap.add_argument("--timeframe", default="M1")
     ap.add_argument("--market", default="crypto")
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit code 1 si faltan minutos o rows != 1440",
+    )
     args = ap.parse_args()
 
     base = os.path.join(
@@ -53,6 +60,7 @@ def main():
     full = pd.date_range(start, end, freq="1min")
     missing = full.difference(pd.DatetimeIndex(d["ts"]))
     print("missing_minutes:", len(missing))
+    exit_code = 0
     if len(missing):
         ranges = []
         s = missing[0]
@@ -68,9 +76,16 @@ def main():
         print("missing_ranges:")
         for a, b in ranges:
             print(f"  {a.isoformat()} -> {b.isoformat()}")
-            print(
-                f"    first_missing: {a.isoformat()} last_missing: {b.isoformat()}"
-            )
+        print(
+            "first_missing:", ranges[0][0].isoformat(),
+            "last_missing:", ranges[-1][1].isoformat(),
+        )
+        exit_code = 1
+    expected = 1440 if args.timeframe == "M1" else None
+    if expected is not None and len(d) != expected:
+        exit_code = 1
+    if args.strict:
+        return exit_code
     return 0
 
 

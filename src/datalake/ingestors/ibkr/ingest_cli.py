@@ -1,6 +1,8 @@
 import argparse
 import logging
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -231,51 +233,42 @@ def _fetch_with_fallback(
     rth: bool,
 ) -> pd.DataFrame:
     cont = _crypto_contract(symbol, exchange=exchange)
-    end_inclusive = end + timedelta(minutes=1)
-    duration = int((end_inclusive - start).total_seconds())
-    end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
+    end_str = end.replace(second=59).strftime("%Y%m%d %H:%M:%S UTC")
+    duration = int((end - start).total_seconds()) + 60
     duration_str = f"{duration} S"
-    logger.info(
-        "REQ[A] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
-        symbol,
-        start.isoformat(),
-        end_str,
-        duration_str,
-        rth,
-        what,
-        exchange,
-    )
-    df = download_window(
-        ib,
-        cont,
-        end_date_time=end_str,
-        duration_str=duration_str,
-        bar_size=BAR_SIZES.get(tf, "1 min"),
-        what_to_show=what,
-        use_rth=rth,
-    )
-    if df.empty:
-        end_str_b = end.strftime("%Y%m%d 23:59:59 UTC")
-        duration_str_b = "28800 S"
+    attempts = [2, 5, 10]
+    df = pd.DataFrame()
+    for i, backoff in enumerate(attempts, start=1):
         logger.info(
-            "REQ[B] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
+            "REQ[A] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s attempt=%d",
             symbol,
             start.isoformat(),
-            end_str_b,
-            duration_str_b,
+            end_str,
+            duration_str,
             rth,
             what,
             exchange,
+            i,
         )
         df = download_window(
             ib,
             cont,
-            end_date_time=end_str_b,
-            duration_str=duration_str_b,
+            end_date_time=end_str,
+            duration_str=duration_str,
             bar_size=BAR_SIZES.get(tf, "1 min"),
             what_to_show=what,
             use_rth=rth,
         )
+        if not df.empty and df["ts"].max() >= end:
+            break
+        logger.warning(
+            "short chunk sym=%s last=%s expected_end=%s attempt=%d",
+            symbol,
+            None if df.empty else df["ts"].max(),
+            end,
+            i,
+        )
+        time.sleep(backoff)
     return df
 
 
@@ -314,10 +307,16 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--what-to-show",
         dest="what",
-        default=os.getenv("IB_WHAT_TO_SHOW", "AGGTRADES"),
+        choices=["TRADES", "MIDPOINT", "BID", "ASK", "BID_ASK"],
         help="Tipo de datos HMDS",
     )
-    ap.add_argument("--rth", action="store_true", help="Usar Regular Trading Hours")
+    ap.add_argument(
+        "--use-rth",
+        dest="use_rth",
+        choices=[0, 1],
+        type=int,
+        help="Usar Regular Trading Hours (0/1)",
+    )
     ap.add_argument(
         "--allow-synth",
         action="store_true",
@@ -332,11 +331,12 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     d1 = datetime.fromisoformat(args.date_to).replace(tzinfo=timezone.utc)
     tf = args.tf
     exchange = args.exchange
-    what = args.what
-    rth = bool(args.rth)
     allow_synth = bool(getattr(args, "allow_synth", False)) or os.getenv(
         "ALLOW_SYNTH_FILL"
     ) == "1"
+
+    env_what = os.getenv("IB_WHAT_TO_SHOW")
+    env_rth = os.getenv("IB_USE_RTH")
 
     lake_root = data_root or os.getenv("LAKE_ROOT", os.getcwd())
 
@@ -347,7 +347,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     cfg.source = "ibkr"
     cfg.vendor = "ibkr"
     cfg.exchange = exchange
-    cfg.what_to_show = what
+    cfg.what_to_show = env_what or "TRADES"
     cfg.tz = "UTC"
 
     synth = os.getenv("DATALAKE_SYNTH") == "1"
@@ -365,6 +365,28 @@ def ingest(args, data_root: str | None = None) -> List[str]:
         cur = d0
         while cur <= d1:
             logger.info("day %s %s", sym, cur.date())
+            is_crypto = (
+                exchange.upper() == "PAXOS"
+                or (re.match(r"^[A-Z0-9]+-[A-Z0-9]+$", sym) and sym.endswith("-USD"))
+            )
+            what_final = (
+                args.what or env_what or ("TRADES" if is_crypto else "AGGTRADES")
+            )
+            if is_crypto and what_final.upper() != "TRADES":
+                logger.warning(
+                    "whatToShow %s incompatible con crypto; forcing TRADES",
+                    what_final,
+                )
+                what_final = "TRADES"
+            rth_final = (
+                bool(args.use_rth)
+                if args.use_rth is not None
+                else (bool(int(env_rth)) if env_rth is not None else False)
+            )
+            if is_crypto and rth_final:
+                logger.warning("useRTH=1 con crypto; forzando 0")
+                rth_final = False
+            cfg.what_to_show = what_final
             if synth:
                 day_df = pd.DataFrame(
                     {
@@ -378,12 +400,6 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 )
             else:
                 all_dfs: List[pd.DataFrame] = []
-                what_final = what
-                if cfg.market == "crypto" and what_final.upper() == "TRADES":
-                    logger.warning(
-                        "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
-                    )
-                    what_final = "AGGTRADES"
                 for start_utc, end_utc in _day_chunks_exact_utc(cur):
                     dfw = _fetch_with_fallback(
                         ib,
@@ -394,12 +410,39 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                         tf,
                         what_final,
                         exchange,
-                        rth,
+                        rth_final,
                     )
                     if not dfw.empty:
                         dfw = dfw[
                             (dfw["ts"] >= start_utc) & (dfw["ts"] <= end_utc)
                         ]
+                        if tf == "M1":
+                            exp_rows = int(
+                                (end_utc - start_utc).total_seconds() / 60
+                            ) + 1
+                            if len(dfw) < exp_rows:
+                                miss = _find_missing_ranges_utc(dfw)
+                                common = {
+                                    "ib": ib,
+                                    "exchange": exchange,
+                                    "what": what_final,
+                                    "rth": rth_final,
+                                }
+                                for s_m, e_m in miss:
+                                    df_fix = _repair_range_with_fallback(
+                                        sym, s_m, e_m, common
+                                    )
+                                    if not df_fix.empty:
+                                        dfw = pd.concat([dfw, df_fix], ignore_index=True)
+                                dfw = dfw.drop_duplicates("ts").sort_values("ts")
+                        logger.debug(
+                            "chunk %s %s→%s rows=%d last=%s",
+                            sym,
+                            start_utc,
+                            end_utc,
+                            len(dfw),
+                            dfw["ts"].max(),
+                        )
                         all_dfs.append(dfw)
                 if not all_dfs:
                     logger.warning("no bars %s %s", sym, cur.date())
@@ -423,7 +466,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                         "ib": ib,
                         "exchange": exchange,
                         "what": what_final,
-                        "rth": rth,
+                        "rth": rth_final,
                     }
                     for start_m, end_m in missing_ranges:
                         df_fix = _repair_range_with_fallback(
@@ -435,6 +478,8 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     if tf == "M1" and len(day_df) != 1440 and allow_synth:
                         day_df = _synth_fill(day_df, cur)
                     day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
+                    if any(s.hour == 20 and e.hour == 23 for s, e in missing_ranges):
+                        logger.warning("faltan 4h exactas (20:00-23:59). revisar useRTH")
                 if day_df.empty:
                     logger.warning("no bars %s %s", sym, cur.isoformat())
                     cur = (cur + timedelta(days=1)).replace(
@@ -477,7 +522,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
             day_df["timeframe"] = tf
             day_df["symbol"] = sym
             day_df["exchange"] = exchange
-            day_df["what_to_show"] = what_final if not synth else what
+            day_df["what_to_show"] = what_final
             day_df["vendor"] = "ibkr"
             day_df["tz"] = "UTC"
             path = write_month(day_df, symbol=sym, cfg=cfg)
