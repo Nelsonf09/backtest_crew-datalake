@@ -44,6 +44,13 @@ RESAMPLE_FREQ = {
 logger = logging.getLogger("ibkr.ingest")
 
 
+def _is_crypto(symbol: str, exchange: str | None) -> bool:
+    ex = (exchange or "").upper()
+    if ex == "PAXOS":
+        return True
+    return "-" in (symbol or "")
+
+
 def _crypto_contract(symbol: str, exchange: str = "PAXOS") -> Contract:
     base, quote = symbol.split("-")
     return Contract(secType="CRYPTO", symbol=base, currency=quote, exchange=exchange)
@@ -59,6 +66,11 @@ def _day_chunks_exact_utc(day_utc: datetime) -> List[tuple[datetime, datetime]]:
         chunks.append((cur, end))
         cur = end + timedelta(minutes=1)
     return chunks
+
+
+def _end_of_day_utc(date_str: str) -> str:
+    y, m, d = date_str.split("-")
+    return f"{y}{m}{d} 23:59:59 UTC"
 
 
 def _find_missing_ranges_utc(df_day: pd.DataFrame) -> List[tuple[datetime, datetime]]:
@@ -150,15 +162,23 @@ def _hourly_fetch(
         end_inclusive = cur + timedelta(hours=1)
         end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
         duration_str = "3600 S"
-        logger.debug(
-            "REQ[H] sym=%s endDateTime=%s duration=%s", symbol, end_str, duration_str
+        bar_sz = BAR_SIZES.get(tf, "1 min")
+        logger.info(
+            "REQ[H] sym=%s exch=%s what=%s useRTH=%s bar=%s end=%s dur=%s",
+            symbol,
+            exchange,
+            what,
+            rth,
+            bar_sz,
+            end_str,
+            duration_str,
         )
         dfh = download_window(
             ib,
             cont,
             end_date_time=end_str,
             duration_str=duration_str,
-            bar_size=BAR_SIZES.get(tf, "1 min"),
+            bar_size=bar_sz,
             what_to_show=what,
             use_rth=rth,
         )
@@ -239,15 +259,16 @@ def _fetch_with_fallback(
     attempts = [2, 5, 10]
     df = pd.DataFrame()
     for i, backoff in enumerate(attempts, start=1):
+        bar_sz = BAR_SIZES.get(tf, "1 min")
         logger.info(
-            "REQ[A] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s attempt=%d",
+            "REQ[A] sym=%s exch=%s what=%s useRTH=%s bar=%s end=%s dur=%s attempt=%d",
             symbol,
-            start.isoformat(),
+            exchange,
+            what,
+            rth,
+            bar_sz,
             end_str,
             duration_str,
-            rth,
-            what,
-            exchange,
             i,
         )
         df = download_window(
@@ -255,7 +276,7 @@ def _fetch_with_fallback(
             cont,
             end_date_time=end_str,
             duration_str=duration_str,
-            bar_size=BAR_SIZES.get(tf, "1 min"),
+            bar_size=bar_sz,
             what_to_show=what,
             use_rth=rth,
         )
@@ -307,7 +328,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--what-to-show",
         dest="what",
-        choices=["TRADES", "MIDPOINT", "BID", "ASK", "BID_ASK"],
+        choices=["TRADES", "MIDPOINT", "BID", "ASK", "BID_ASK", "AGGTRADES"],
         help="Tipo de datos HMDS",
     )
     ap.add_argument(
@@ -338,6 +359,19 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     env_what = os.getenv("IB_WHAT_TO_SHOW")
     env_rth = os.getenv("IB_USE_RTH")
 
+    symbol_first = symbols[0] if symbols else ""
+    is_crypto_default = _is_crypto(symbol_first, exchange)
+
+    user_forced_wts = args.what is not None and args.what != ""
+    if is_crypto_default and not user_forced_wts:
+        args.what = env_what or "AGGTRADES"
+
+    if is_crypto_default and args.use_rth is None:
+        if env_rth is not None and env_rth.strip() != "":
+            args.use_rth = int(env_rth)
+        else:
+            args.use_rth = 0
+
     lake_root = data_root or os.getenv("LAKE_ROOT", os.getcwd())
 
     cfg = LakeConfig()
@@ -347,7 +381,9 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     cfg.source = "ibkr"
     cfg.vendor = "ibkr"
     cfg.exchange = exchange
-    cfg.what_to_show = env_what or "TRADES"
+    cfg.what_to_show = args.what or env_what or (
+        "AGGTRADES" if is_crypto_default else "TRADES"
+    )
     cfg.tz = "UTC"
 
     synth = os.getenv("DATALAKE_SYNTH") == "1"
@@ -365,27 +401,17 @@ def ingest(args, data_root: str | None = None) -> List[str]:
         cur = d0
         while cur <= d1:
             logger.info("day %s %s", sym, cur.date())
-            is_crypto = (
-                exchange.upper() == "PAXOS"
-                or (re.match(r"^[A-Z0-9]+-[A-Z0-9]+$", sym) and sym.endswith("-USD"))
+            is_crypto = _is_crypto(sym, exchange)
+            what_final = args.what or env_what or (
+                "AGGTRADES" if is_crypto else "TRADES"
             )
-            what_final = (
-                args.what or env_what or ("TRADES" if is_crypto else "AGGTRADES")
-            )
-            if is_crypto and what_final.upper() != "TRADES":
-                logger.warning(
-                    "whatToShow %s incompatible con crypto; forcing TRADES",
-                    what_final,
-                )
-                what_final = "TRADES"
             rth_final = (
                 bool(args.use_rth)
                 if args.use_rth is not None
                 else (bool(int(env_rth)) if env_rth is not None else False)
             )
             if is_crypto and rth_final:
-                logger.warning("useRTH=1 con crypto; forzando 0")
-                rth_final = False
+                logger.warning("useRTH=1 con cripto; continúa por petición del usuario")
             cfg.what_to_show = what_final
             if synth:
                 day_df = pd.DataFrame(
