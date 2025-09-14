@@ -9,6 +9,7 @@ from ib_insync import IB, Contract
 
 from datalake.config import LakeConfig
 from datalake.ingestors.ibkr.writer import write_month
+from datalake.ingestors.ibkr.downloader import download_window
 
 # --- Helpers de contrato, chunking y fetch robusto (2h) ---
 CHUNK_HOURS = 8
@@ -47,64 +48,16 @@ def _crypto_contract(symbol: str, exchange: str = "PAXOS") -> Contract:
     return Contract(secType="CRYPTO", symbol=base, currency=quote, exchange=exchange)
 
 
-def _day_chunks_utc(day: datetime, hours: int = CHUNK_HOURS):
-    start = day.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = start + timedelta(days=1) - timedelta(minutes=1)  # 23:59 inclusivo
-    chunks = []
+def _day_chunks_exact_utc(day_utc: datetime) -> List[tuple[datetime, datetime]]:
+    """Return three fixed UTC chunks covering the day without gaps."""
+    start = day_utc.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    chunks: List[tuple[datetime, datetime]] = []
     cur = start
-    while cur <= end:
-        nxt = min(cur + timedelta(hours=hours) - timedelta(minutes=1), end)
-        chunks.append((cur, nxt))
-        cur = nxt + timedelta(minutes=1)
-    logging.info(
-        "IBKR chunks UTC: %s",
-        [(a.strftime("%H:%M"), b.strftime("%H:%M")) for a, b in chunks],
-    )
+    for _ in range(3):
+        end = cur + timedelta(hours=CHUNK_HOURS) - timedelta(minutes=1)
+        chunks.append((cur, end))
+        cur = end + timedelta(minutes=1)
     return chunks
-
-
-def _fetch_window(
-    ib: IB,
-    contract: Contract,
-    start_utc: datetime,
-    end_utc: datetime,
-    what_to_show: str,
-    timeframe: str,
-    use_rth: bool,
-    single_day_fast: bool = False,
-) -> pd.DataFrame:
-    bar_size = BAR_SIZES.get(timeframe, "1 min")
-    end_inclusive = end_utc + timedelta(minutes=1)
-    seconds = int((end_inclusive - start_utc).total_seconds())
-    duration_str = (
-        "1 D" if single_day_fast and timeframe == "M1" else f"{seconds} S"
-    )
-    end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
-    logger.debug(
-        "reqHistoricalData duration=%s barSize=%s end=%s",
-        duration_str,
-        bar_size,
-        end_str,
-    )
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime=end_str,
-        durationStr=duration_str,
-        barSizeSetting=bar_size,
-        whatToShow=what_to_show,
-        useRTH=int(use_rth),
-        formatDate=2,
-        keepUpToDate=False,
-    )
-    if not bars:
-        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
-    df = pd.DataFrame(b.__dict__ for b in bars)[
-        ["date", "open", "high", "low", "close", "volume"]
-    ]
-    df["ts"] = pd.to_datetime(df["date"], utc=True)
-    df = df.drop(columns=["date"]).sort_values("ts")
-    df = df[(df["ts"] >= start_utc) & (df["ts"] <= end_utc)]
-    return df
 
 
 def _resample(pdf: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -206,31 +159,83 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 )
                 if fast:
                     cont = _crypto_contract(sym, exchange=exchange)
-                    dfw = _fetch_window(
+                    end_fast = cur + timedelta(days=1) - timedelta(minutes=1)
+                    end_inclusive = end_fast + timedelta(minutes=1)
+                    seconds = int((end_inclusive - cur).total_seconds())
+                    duration_str = "1 D" if tf == "M1" else f"{seconds} S"
+                    end_str = end_inclusive.astimezone(timezone.utc).strftime(
+                        "%Y%m%d %H:%M:%S UTC"
+                    )
+                    what_req = what
+                    if cfg.market == "crypto" and what_req.upper() == "TRADES":
+                        logger.warning(
+                            "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
+                        )
+                        what_req = "AGGTRADES"
+                    logger.info(
+                        "REQ [1/1] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
+                        sym,
+                        cur.isoformat(),
+                        end_str,
+                        duration_str,
+                        rth,
+                        what_req,
+                        exchange,
+                    )
+                    dfw = download_window(
                         ib,
                         cont,
-                        cur,
-                        cur + timedelta(days=1) - timedelta(minutes=1),
-                        what_to_show=what,
-                        timeframe=tf,
+                        end_date_time=end_str,
+                        duration_str=duration_str,
+                        bar_size=BAR_SIZES.get(tf, "1 min"),
+                        what_to_show=what_req,
                         use_rth=rth,
-                        single_day_fast=True,
                     )
                     if not dfw.empty:
+                        dfw = dfw[(dfw["ts"] >= cur) & (dfw["ts"] <= end_fast)]
                         all_dfs.append(dfw)
+                    what_final = what_req
                 else:
-                    for start_utc, end_utc in _day_chunks_utc(cur, CHUNK_HOURS):
+                    what_final = what
+                    if cfg.market == "crypto" and what_final.upper() == "TRADES":
+                        logger.warning(
+                            "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
+                        )
+                        what_final = "AGGTRADES"
+                    for i, (start_utc, end_utc) in enumerate(
+                        _day_chunks_exact_utc(cur), start=1
+                    ):
                         cont = _crypto_contract(sym, exchange=exchange)
-                        dfw = _fetch_window(
+                        end_inclusive = end_utc + timedelta(minutes=1)
+                        seconds = int((end_inclusive - start_utc).total_seconds())
+                        duration_str = f"{seconds} S"
+                        end_str = end_inclusive.astimezone(timezone.utc).strftime(
+                            "%Y%m%d %H:%M:%S UTC"
+                        )
+                        logger.info(
+                            "REQ [%s/3] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
+                            i,
+                            sym,
+                            start_utc.isoformat(),
+                            end_str,
+                            duration_str,
+                            rth,
+                            what_final,
+                            exchange,
+                        )
+                        dfw = download_window(
                             ib,
                             cont,
-                            start_utc,
-                            end_utc,
-                            what_to_show=what,
-                            timeframe=tf,
+                            end_date_time=end_str,
+                            duration_str=duration_str,
+                            bar_size=BAR_SIZES.get(tf, "1 min"),
+                            what_to_show=what_final,
                             use_rth=rth,
                         )
                         if not dfw.empty:
+                            dfw = dfw[
+                                (dfw["ts"] >= start_utc) & (dfw["ts"] <= end_utc)
+                            ]
                             all_dfs.append(dfw)
                 if not all_dfs:
                     logger.warning("no bars %s %s", sym, cur.date())
@@ -240,8 +245,18 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     continue
                 day_df = (
                     pd.concat(all_dfs, ignore_index=True)
-                    .drop_duplicates(subset=["ts"], keep="last")
+                    .drop_duplicates(subset=["ts"], keep="first")
                     .sort_values("ts")
+                )
+                if day_df["ts"].dt.tz is None:
+                    day_df["ts"] = day_df["ts"].dt.tz_localize("UTC")
+                else:
+                    day_df["ts"] = day_df["ts"].dt.tz_convert("UTC")
+                logger.info(
+                    "summary rows=%d range=%s→%s",
+                    len(day_df),
+                    day_df["ts"].min(),
+                    day_df["ts"].max(),
                 )
 
             day_df = _resample(day_df, tf)
@@ -250,7 +265,7 @@ def ingest(args, data_root: str | None = None) -> List[str]:
             day_df["timeframe"] = tf
             day_df["symbol"] = sym
             day_df["exchange"] = exchange
-            day_df["what_to_show"] = what
+            day_df["what_to_show"] = what_final if not synth else what
             day_df["vendor"] = "ibkr"
             day_df["tz"] = "UTC"
             path = write_month(day_df, symbol=sym, cfg=cfg)

@@ -28,3 +28,17 @@ Si IB devuelve `Error 321` por `duration format`, revisa la versión del ingesto
 Las solicitudes ahora expresan la duración en segundos (`"{N} S"`) o usan
 `"1 D"` para ventanas diarias de M1, evitando la unidad `H`.
 
+## CRYPTO M1
+Las descargas M1 de criptomonedas se dividen en **tres solicitudes de 8 horas exactas**:
+
+- 00:00→07:59 (endDateTime=08:00:00 UTC, duration=28800 S)
+- 08:00→15:59 (endDateTime=16:00:00 UTC, duration=28800 S)
+- 16:00→23:59 (endDateTime=00:00:00 UTC del día siguiente, duration=28800 S)
+
+El `endDateTime` se construye como `end + 1min` y la duración se expresa en
+segundos, evitando perder el último minuto del tramo.
+
+### Troubleshooting
+Si falta el bloque 20:00→23:59, revisar los logs `REQ [3/3]` y confirmar
+`endDateTime` y `duration`.
+
