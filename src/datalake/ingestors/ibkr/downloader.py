@@ -16,11 +16,14 @@ def download_window(
     what_to_show: str,
     use_rth: bool,
 ) -> pd.DataFrame:
-    """Wrapper around IB.reqHistoricalData with debug logging.
+    """Wrapper around ``IB.reqHistoricalData`` with debug logging.
 
-    end_date_time must include the " UTC" suffix. duration_str is expressed in
-    seconds, e.g. "28800 S".
+    Both ``end_date_time`` and ``duration_str`` are passed verbatim to IB. The
+    duration string **must** already be expressed in seconds using the
+    ``"{N} S"`` format.
     """
+    if not duration_str.endswith(" S"):
+        raise ValueError("duration_str must be in seconds, e.g. '28800 S'")
     logger.debug(
         "reqHistoricalData endDateTime=%s durationStr=%s barSize=%s what=%s rth=%s exch=%s sym=%s",
         end_date_time,

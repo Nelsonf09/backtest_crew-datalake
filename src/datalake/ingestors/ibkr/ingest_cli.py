@@ -59,6 +59,80 @@ def _day_chunks_exact_utc(day_utc: datetime) -> List[tuple[datetime, datetime]]:
     return chunks
 
 
+def _find_missing_ranges_utc(df_day: pd.DataFrame) -> List[tuple[datetime, datetime]]:
+    """Given a day's dataframe, return missing minute ranges in UTC."""
+    if df_day.empty:
+        return []
+    day_start = df_day["ts"].dt.floor("D").min().replace(tzinfo=timezone.utc)
+    full = pd.date_range(
+        day_start,
+        day_start + timedelta(days=1) - timedelta(minutes=1),
+        freq="1min",
+        tz=timezone.utc,
+    )
+    missing = full.difference(pd.DatetimeIndex(df_day["ts"]))
+    if missing.empty:
+        return []
+    ranges: List[tuple[datetime, datetime]] = []
+    start = missing[0]
+    prev = start
+    for ts in missing[1:]:
+        if ts - prev == timedelta(minutes=1):
+            prev = ts
+        else:
+            ranges.append((start.to_pydatetime(), prev.to_pydatetime()))
+            start = ts
+            prev = ts
+    ranges.append((start.to_pydatetime(), prev.to_pydatetime()))
+    return ranges
+
+
+def _hourly_fetch(
+    ib: IB,
+    symbol: str,
+    start_utc: datetime,
+    end_utc: datetime,
+    cfg: LakeConfig,
+    tf: str,
+    what: str,
+    exchange: str,
+    rth: bool,
+) -> pd.DataFrame:
+    """Fetch missing data in 1h windows covering [start_utc, end_utc]."""
+    cont = _crypto_contract(symbol, exchange=exchange)
+    cur = start_utc.replace(minute=0, second=0, microsecond=0)
+    end_hour = end_utc.replace(minute=0, second=0, microsecond=0)
+    dfs: List[pd.DataFrame] = []
+    while cur <= end_hour:
+        end_inclusive = cur + timedelta(hours=1)
+        end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
+        duration_str = "3600 S"
+        logger.debug(
+            "REQ[H] sym=%s endDateTime=%s duration=%s", symbol, end_str, duration_str
+        )
+        dfh = download_window(
+            ib,
+            cont,
+            end_date_time=end_str,
+            duration_str=duration_str,
+            bar_size=BAR_SIZES.get(tf, "1 min"),
+            what_to_show=what,
+            use_rth=rth,
+        )
+        if not dfh.empty:
+            dfh = dfh[(dfh["ts"] >= cur) & (dfh["ts"] < end_inclusive)]
+            dfs.append(dfh)
+        cur = end_inclusive
+    if not dfs:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    out = pd.concat(dfs, ignore_index=True).drop_duplicates("ts").sort_values("ts")
+    if out["ts"].dt.tz is None:
+        out["ts"] = out["ts"].dt.tz_localize("UTC")
+    else:
+        out["ts"] = out["ts"].dt.tz_convert("UTC")
+    return out[(out["ts"] >= start_utc) & (out["ts"] <= end_utc)]
+
+
 def _fetch_with_fallback(
     ib: IB,
     symbol: str,
@@ -248,18 +322,43 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     day_df["ts"] = day_df["ts"].dt.tz_localize("UTC")
                 else:
                     day_df["ts"] = day_df["ts"].dt.tz_convert("UTC")
+                missing_ranges: List[tuple[datetime, datetime]] = []
+                if tf == "M1" and len(day_df) != 1440:
+                    missing_ranges = _find_missing_ranges_utc(day_df)
+                    for start_m, end_m in missing_ranges:
+                        df_fix = _hourly_fetch(
+                            ib,
+                            sym,
+                            start_m,
+                            end_m,
+                            cfg,
+                            tf,
+                            what_final,
+                            exchange,
+                            rth,
+                        )
+                        if not df_fix.empty:
+                            day_df = pd.concat([day_df, df_fix], ignore_index=True)
+                    day_df = (
+                        day_df.drop_duplicates(subset=["ts"], keep="first")
+                        .sort_values("ts")
+                    )
                 per_hour = (
                     day_df.set_index("ts").groupby(day_df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
                 )
-                if len(day_df) != 1440:
+                if tf == "M1" and len(day_df) != 1440:
+                    remaining = _find_missing_ranges_utc(day_df)
                     logger.warning(
-                        "incomplete day rows=%d range=%s→%s per_hour=%s",
+                        "incomplete day rows=%d range=%s→%s per_hour=%s missing=%s",
                         len(day_df),
                         day_df["ts"].min(),
                         day_df["ts"].max(),
                         per_hour.to_dict(),
+                        [(s.isoformat(), e.isoformat()) for s, e in remaining],
                     )
                 else:
+                    if tf == "M1" and missing_ranges:
+                        logger.info("day healed")
                     logger.info(
                         "summary rows=%d range=%s→%s",
                         len(day_df),
