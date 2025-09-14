@@ -435,16 +435,29 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     if tf == "M1" and len(day_df) != 1440 and allow_synth:
                         day_df = _synth_fill(day_df, cur)
                     day_df = day_df.drop_duplicates(subset=["ts"], keep="first").sort_values("ts")
+                if day_df.empty:
+                    logger.warning("no bars %s %s", sym, cur.isoformat())
+                    cur = (cur + timedelta(days=1)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+                    continue
                 per_hour = (
-                    day_df.set_index("ts").groupby(day_df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
+                    day_df.set_index("ts")
+                    .groupby(day_df["ts"].dt.hour)
+                    .size()
+                    .reindex(range(24), fill_value=0)
                 )
                 if tf == "M1" and len(day_df) != 1440:
                     remaining = _find_missing_ranges_utc(day_df)
+                    range_str = (
+                        "EMPTY"
+                        if day_df.empty
+                        else f"{day_df['ts'].min()}→{day_df['ts'].max()}"
+                    )
                     logger.warning(
-                        "incomplete day rows=%d range=%s→%s per_hour=%s missing=%s",
+                        "incomplete day rows=%d range=%s per_hour=%s missing=%s",
                         len(day_df),
-                        day_df["ts"].min(),
-                        day_df["ts"].max(),
+                        range_str,
                         per_hour.to_dict(),
                         [(s.isoformat(), e.isoformat()) for s, e in remaining],
                     )
