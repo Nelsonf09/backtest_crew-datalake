@@ -13,7 +13,6 @@ from datalake.ingestors.ibkr.downloader import download_window
 
 # --- Helpers de contrato, chunking y fetch robusto (2h) ---
 CHUNK_HOURS = 8
-BACKFILL_SLICE_HOURS = 2
 
 BAR_SIZES = {
     "M1": "1 min",
@@ -58,6 +57,66 @@ def _day_chunks_exact_utc(day_utc: datetime) -> List[tuple[datetime, datetime]]:
         chunks.append((cur, end))
         cur = end + timedelta(minutes=1)
     return chunks
+
+
+def _fetch_with_fallback(
+    ib: IB,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    cfg: LakeConfig,
+    tf: str,
+    what: str,
+    exchange: str,
+    rth: bool,
+) -> pd.DataFrame:
+    cont = _crypto_contract(symbol, exchange=exchange)
+    end_inclusive = end + timedelta(minutes=1)
+    duration = int((end_inclusive - start).total_seconds())
+    end_str = end_inclusive.strftime("%Y%m%d %H:%M:%S UTC")
+    duration_str = f"{duration} S"
+    logger.info(
+        "REQ[A] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
+        symbol,
+        start.isoformat(),
+        end_str,
+        duration_str,
+        rth,
+        what,
+        exchange,
+    )
+    df = download_window(
+        ib,
+        cont,
+        end_date_time=end_str,
+        duration_str=duration_str,
+        bar_size=BAR_SIZES.get(tf, "1 min"),
+        what_to_show=what,
+        use_rth=rth,
+    )
+    if df.empty:
+        end_str_b = end.strftime("%Y%m%d 23:59:59 UTC")
+        duration_str_b = "28800 S"
+        logger.info(
+            "REQ[B] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
+            symbol,
+            start.isoformat(),
+            end_str_b,
+            duration_str_b,
+            rth,
+            what,
+            exchange,
+        )
+        df = download_window(
+            ib,
+            cont,
+            end_date_time=end_str_b,
+            duration_str=duration_str_b,
+            bar_size=BAR_SIZES.get(tf, "1 min"),
+            what_to_show=what,
+            use_rth=rth,
+        )
+    return df
 
 
 def _resample(pdf: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -110,7 +169,6 @@ def ingest(args, data_root: str | None = None) -> List[str]:
     exchange = args.exchange
     what = args.what
     rth = bool(args.rth)
-    same_day = d0.date() == d1.date()
 
     lake_root = data_root or os.getenv("LAKE_ROOT", os.getcwd())
 
@@ -152,91 +210,29 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                 )
             else:
                 all_dfs: List[pd.DataFrame] = []
-                fast = (
-                    os.getenv("DATALAKE_IBKR_SINGLE_DAY_FASTPATH", "0") == "1"
-                    and same_day
-                    and tf == "M1"
-                )
-                if fast:
-                    cont = _crypto_contract(sym, exchange=exchange)
-                    end_fast = cur + timedelta(days=1) - timedelta(minutes=1)
-                    end_inclusive = end_fast + timedelta(minutes=1)
-                    seconds = int((end_inclusive - cur).total_seconds())
-                    duration_str = "1 D" if tf == "M1" else f"{seconds} S"
-                    end_str = end_inclusive.astimezone(timezone.utc).strftime(
-                        "%Y%m%d %H:%M:%S UTC"
+                what_final = what
+                if cfg.market == "crypto" and what_final.upper() == "TRADES":
+                    logger.warning(
+                        "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
                     )
-                    what_req = what
-                    if cfg.market == "crypto" and what_req.upper() == "TRADES":
-                        logger.warning(
-                            "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
-                        )
-                        what_req = "AGGTRADES"
-                    logger.info(
-                        "REQ [1/1] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
-                        sym,
-                        cur.isoformat(),
-                        end_str,
-                        duration_str,
-                        rth,
-                        what_req,
-                        exchange,
-                    )
-                    dfw = download_window(
+                    what_final = "AGGTRADES"
+                for start_utc, end_utc in _day_chunks_exact_utc(cur):
+                    dfw = _fetch_with_fallback(
                         ib,
-                        cont,
-                        end_date_time=end_str,
-                        duration_str=duration_str,
-                        bar_size=BAR_SIZES.get(tf, "1 min"),
-                        what_to_show=what_req,
-                        use_rth=rth,
+                        sym,
+                        start_utc,
+                        end_utc,
+                        cfg,
+                        tf,
+                        what_final,
+                        exchange,
+                        rth,
                     )
                     if not dfw.empty:
-                        dfw = dfw[(dfw["ts"] >= cur) & (dfw["ts"] <= end_fast)]
+                        dfw = dfw[
+                            (dfw["ts"] >= start_utc) & (dfw["ts"] <= end_utc)
+                        ]
                         all_dfs.append(dfw)
-                    what_final = what_req
-                else:
-                    what_final = what
-                    if cfg.market == "crypto" and what_final.upper() == "TRADES":
-                        logger.warning(
-                            "whatToShow TRADES incompatible with crypto; forcing AGGTRADES"
-                        )
-                        what_final = "AGGTRADES"
-                    for i, (start_utc, end_utc) in enumerate(
-                        _day_chunks_exact_utc(cur), start=1
-                    ):
-                        cont = _crypto_contract(sym, exchange=exchange)
-                        end_inclusive = end_utc + timedelta(minutes=1)
-                        seconds = int((end_inclusive - start_utc).total_seconds())
-                        duration_str = f"{seconds} S"
-                        end_str = end_inclusive.astimezone(timezone.utc).strftime(
-                            "%Y%m%d %H:%M:%S UTC"
-                        )
-                        logger.info(
-                            "REQ [%s/3] sym=%s start=%s endDateTime=%s duration=%s rth=%s what=%s exch=%s",
-                            i,
-                            sym,
-                            start_utc.isoformat(),
-                            end_str,
-                            duration_str,
-                            rth,
-                            what_final,
-                            exchange,
-                        )
-                        dfw = download_window(
-                            ib,
-                            cont,
-                            end_date_time=end_str,
-                            duration_str=duration_str,
-                            bar_size=BAR_SIZES.get(tf, "1 min"),
-                            what_to_show=what_final,
-                            use_rth=rth,
-                        )
-                        if not dfw.empty:
-                            dfw = dfw[
-                                (dfw["ts"] >= start_utc) & (dfw["ts"] <= end_utc)
-                            ]
-                            all_dfs.append(dfw)
                 if not all_dfs:
                     logger.warning("no bars %s %s", sym, cur.date())
                     cur = (cur + timedelta(days=1)).replace(
@@ -252,12 +248,24 @@ def ingest(args, data_root: str | None = None) -> List[str]:
                     day_df["ts"] = day_df["ts"].dt.tz_localize("UTC")
                 else:
                     day_df["ts"] = day_df["ts"].dt.tz_convert("UTC")
-                logger.info(
-                    "summary rows=%d range=%s→%s",
-                    len(day_df),
-                    day_df["ts"].min(),
-                    day_df["ts"].max(),
+                per_hour = (
+                    day_df.set_index("ts").groupby(day_df["ts"].dt.hour).size().reindex(range(24), fill_value=0)
                 )
+                if len(day_df) != 1440:
+                    logger.warning(
+                        "incomplete day rows=%d range=%s→%s per_hour=%s",
+                        len(day_df),
+                        day_df["ts"].min(),
+                        day_df["ts"].max(),
+                        per_hour.to_dict(),
+                    )
+                else:
+                    logger.info(
+                        "summary rows=%d range=%s→%s",
+                        len(day_df),
+                        day_df["ts"].min(),
+                        day_df["ts"].max(),
+                    )
 
             day_df = _resample(day_df, tf)
             day_df["source"] = "ibkr"
