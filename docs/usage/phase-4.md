@@ -31,14 +31,15 @@ Las solicitudes ahora expresan la duración en segundos (`"{N} S"`) o usan
 ## CRYPTO M1
 Las descargas M1 de criptomonedas se dividen en **tres solicitudes de 8 horas exactas**:
 
-- 00:00→07:59 (endDateTime=08:00:00 UTC, duration=28800 S)
-- 08:00→15:59 (endDateTime=16:00:00 UTC, duration=28800 S)
-- 16:00→23:59 (endDateTime=00:00:00 UTC del día siguiente, duration=28800 S)
+- 00:00→07:59 → endDateTime=08:00:00 UTC, duration=28800 S
+- 08:00→15:59 → endDateTime=16:00:00 UTC, duration=28800 S
+- 16:00→23:59 → (A) endDateTime=00:00:00 UTC del día siguiente, duration=28800 S; si A=0 filas, (B) endDateTime=23:59:59 UTC del mismo día, duration=28800 S
 
-El `endDateTime` se construye como `end + 1min` y la duración se expresa en
-segundos, evitando perder el último minuto del tramo.
+El `endDateTime` se construye como `end + 1min` y la duración en segundos.
+El fallback `23:59:59` cubre servidores HMDS que omiten el último minuto al
+cruzar medianoche.
 
 ### Troubleshooting
-Si falta el bloque 20:00→23:59, revisar los logs `REQ [3/3]` y confirmar
-`endDateTime` y `duration`.
+Revisar los logs `REQ[A]`/`REQ[B]` y validar 1440 filas con
+`tools/check_day.py`.
 

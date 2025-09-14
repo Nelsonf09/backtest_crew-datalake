@@ -41,7 +41,9 @@ def main():
     d = df[(df["ts"] >= start) & (df["ts"] <= end)].sort_values("ts").copy()
 
     print("rows:", len(d), "| range:", d["ts"].min(), "->", d["ts"].max())
-    per_hour = d.set_index("ts").groupby(d["ts"].dt.hour).size()
+    per_hour = (
+        d.set_index("ts").groupby(d["ts"].dt.hour).size().reindex(range(24), fill_value=0)
+    )
     print("per_hour:")
     print(per_hour)
 
