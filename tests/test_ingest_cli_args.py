@@ -30,4 +30,4 @@ def test_argparse_and_metadata(tmp_path, monkeypatch):
     assert "timeframe" in df.columns and "symbol" in df.columns
     assert (df["timeframe"] == "M1").all()
     assert (df["symbol"] == "BTC-USD").all()
-    assert (df["what_to_show"] == "TRADES").all()
+    assert (df["what_to_show"] == "AGGTRADES").all()

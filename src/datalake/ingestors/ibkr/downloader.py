@@ -1,4 +1,5 @@
 import logging
+import logging
 import os
 from types import SimpleNamespace
 from typing import List
@@ -10,6 +11,47 @@ from .timeutil import to_utc
 
 logger = logging.getLogger("ibkr.downloader")
 
+
+def _req_historical_with_retry(
+    ib: IB,
+    contract: Contract,
+    *,
+    end_date_time: str,
+    duration_str: str,
+    bar_size: str,
+    what_to_show: str,
+    use_rth: bool,
+    fmt_date: int = 2,
+):
+    try:
+        return ib.reqHistoricalData(
+            contract,
+            endDateTime=end_date_time,
+            durationStr=duration_str,
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=int(use_rth),
+            formatDate=fmt_date,
+            keepUpToDate=False,
+        )
+    except Exception as e:
+        msg = str(e)
+        needs_agg = ("10299" in msg) and ("AGGTRADES" in msg.upper())
+        if needs_agg and what_to_show.upper() != "AGGTRADES":
+            logger.warning(
+                "IB exige AGGTRADES (10299). Reintentando con whatToShow=AGGTRADES."
+            )
+            return ib.reqHistoricalData(
+                contract,
+                endDateTime=end_date_time,
+                durationStr=duration_str,
+                barSizeSetting=bar_size,
+                whatToShow="AGGTRADES",
+                useRTH=int(use_rth),
+                formatDate=fmt_date,
+                keepUpToDate=False,
+            )
+        raise
 
 def download_window(
     ib: IB,
@@ -29,25 +71,24 @@ def download_window(
     """
     if not duration_str.endswith(" S"):
         raise ValueError("duration_str must be in seconds, e.g. '28800 S'")
-    logger.debug(
-        "reqHistoricalData endDateTime=%s durationStr=%s barSize=%s what=%s rth=%s exch=%s sym=%s",
-        end_date_time,
-        duration_str,
-        bar_size,
+    logger.info(
+        "REQ[W] sym=%s exch=%s what=%s useRTH=%s bar=%s end=%s dur=%s",
+        contract.symbol,
+        contract.exchange,
         what_to_show,
         use_rth,
-        contract.exchange,
-        contract.symbol,
+        bar_size,
+        end_date_time,
+        duration_str,
     )
-    bars = ib.reqHistoricalData(
+    bars = _req_historical_with_retry(
+        ib,
         contract,
-        endDateTime=end_date_time,
-        durationStr=duration_str,
-        barSizeSetting=bar_size,
-        whatToShow=what_to_show,
-        useRTH=int(use_rth),
-        formatDate=2,
-        keepUpToDate=False,
+        end_date_time=end_date_time,
+        duration_str=duration_str,
+        bar_size=bar_size,
+        what_to_show=what_to_show,
+        use_rth=use_rth,
     )
     if not bars:
         return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
@@ -137,6 +178,7 @@ def fetch_bars_range(
     duration_seconds: int,
     timeframe: str,
     what_to_show: str,
+    use_rth: bool = False,
 ) -> List[SimpleNamespace]:
     """Descarga barras históricas para un rango arbitrario.
 
@@ -173,15 +215,14 @@ def fetch_bars_range(
         end_str = end_dt_utc if isinstance(end_dt_utc, str) else end_dt_utc.strftime("%Y%m%d %H:%M:%S UTC")
         duration_str = f"{int(duration_seconds)} S"
         bar_size = BAR_SIZES.get(timeframe, timeframe)
-        bars = ib.reqHistoricalData(
+        bars = _req_historical_with_retry(
+            ib,
             contract,
-            endDateTime=end_str,
-            durationStr=duration_str,
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=False,
-            formatDate=2,
-            keepUpToDate=False,
+            end_date_time=end_str,
+            duration_str=duration_str,
+            bar_size=bar_size,
+            what_to_show=what_to_show,
+            use_rth=use_rth,
         )
         return bars
     finally:

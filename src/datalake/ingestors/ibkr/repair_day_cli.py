@@ -19,6 +19,13 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="what",
         default=os.getenv("IB_WHAT_TO_SHOW", "AGGTRADES"),
     )
+    ap.add_argument(
+        "--use-rth",
+        dest="use_rth",
+        choices=[0, 1],
+        type=int,
+        default=int(os.getenv("IB_USE_RTH", "0")),
+    )
     ap.add_argument("--lake-root", default=os.getenv("LAKE_ROOT", os.getcwd()))
     ap.add_argument("--allow-synth", action="store_true", help="Relleno sintético")
     ap.add_argument(
@@ -34,6 +41,7 @@ def repair_day(args) -> str:
     tf = args.tf
     exchange = args.exchange
     what = args.what
+    rth = bool(args.use_rth)
     lake_root = args.lake_root
 
     cfg = LakeConfig()
@@ -44,6 +52,7 @@ def repair_day(args) -> str:
     cfg.vendor = "ibkr"
     cfg.exchange = exchange
     cfg.what_to_show = what
+    cfg.use_rth = rth
     cfg.tz = "UTC"
     cfg.logger = logger
 
@@ -53,6 +62,7 @@ def repair_day(args) -> str:
         timeframe=tf,
         exchange=exchange,
         what_to_show=what,
+        use_rth=rth,
         cfg=cfg,
     )
     return getattr(cfg, "last_dest_file", "")

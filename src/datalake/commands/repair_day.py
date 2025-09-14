@@ -3,7 +3,15 @@ from __future__ import annotations
 import pandas as pd
 
 
-def repair_day(symbol: str, date_utc: str, timeframe: str, exchange: str, what_to_show: str, cfg) -> None:
+def repair_day(
+    symbol: str,
+    date_utc: str,
+    timeframe: str,
+    exchange: str,
+    what_to_show: str,
+    use_rth: bool,
+    cfg,
+) -> None:
     from datalake.ingestors.ibkr.downloader import fetch_bars_range, bars_to_df
     from datalake.ingestors.ibkr.writer import write_month
     from datalake.tools.gaps import find_missing_ranges_utc
@@ -38,6 +46,7 @@ def repair_day(symbol: str, date_utc: str, timeframe: str, exchange: str, what_t
             duration_seconds=int((fetch_end - g_start).total_seconds()),
             timeframe=timeframe,
             what_to_show=what_to_show,
+            use_rth=use_rth,
         )
         df_part = bars_to_df(bars, exchange=exchange)
         df_part = df_part[(df_part['ts'] >= g_start) & (df_part['ts'] <= g_end)]
