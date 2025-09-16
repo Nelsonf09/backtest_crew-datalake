@@ -15,6 +15,15 @@ BASE_URLS = {
 _INTERVALS = {
     'M1': '1m',
     'M5': '5m',
+    'M15': '15m',
+    'M30': '30m',
+}
+
+_STEP_MINUTES = {
+    'M1': 1,
+    'M5': 5,
+    'M15': 15,
+    'M30': 30,
 }
 
 class BinanceHTTPError(Exception):
@@ -44,7 +53,7 @@ def fetch_klines(
     symbol: str,
     start_dt: datetime,
     end_dt: datetime,
-    tf: Literal['M1','M5'] = 'M1',
+    tf: Literal['M1','M5','M15','M30'] = 'M1',
     region: Literal['global','us'] = 'global'
 ) -> pd.DataFrame:
     if tf not in _INTERVALS:
@@ -54,7 +63,7 @@ def fetch_klines(
     if end_dt < start_dt:
         return pd.DataFrame(columns=['ts','open','high','low','close','volume'])
 
-    step_minutes = 1 if tf == 'M1' else 5
+    step_minutes = _STEP_MINUTES[tf]
     max_bars = 1000  # límite de Binance por request
     # Ventana máxima en minutos por request
     max_minutes_per_req = max_bars * step_minutes
@@ -108,13 +117,18 @@ def fetch_klines(
         df = df[(df['ts'] >= cursor) & (df['ts'] <= win_end)]
         out.append(df)
 
-        # Avanzar cursor al siguiente minuto (o 5 min) después de win_end
+        # Avanzar cursor a la siguiente ventana (según step) después de win_end
         cursor = win_end + timedelta(minutes=step_minutes)
 
     if not out:
         return pd.DataFrame(columns=['ts','open','high','low','close','volume'])
 
-    res = pd.concat(out, ignore_index=True).drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
+    res = (
+        pd.concat(out, ignore_index=True)
+        .drop_duplicates(subset=['ts'])
+        .sort_values('ts')
+        .reset_index(drop=True)
+    )
     # Clip final absoluto
     res = res[(res['ts'] >= start_dt) & (res['ts'] <= end_dt)].reset_index(drop=True)
     return res

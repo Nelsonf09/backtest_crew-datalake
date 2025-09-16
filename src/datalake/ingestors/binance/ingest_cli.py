@@ -12,7 +12,7 @@ from datalake.utils.symbols.binance_map import to_binance_symbol
 
 UTC = timezone.utc
 
-TF_CHOICES = ['M1','M5']
+TF_CHOICES = ['M1','M5','M15','M30']
 
 def _dt_utc(d: str, h: int, m: int, s: int = 0) -> datetime:
     y, mo, da = map(int, d.split('-'))
@@ -27,7 +27,12 @@ def _days_iter(date_from: str, date_to: str):
         cur = cur + timedelta(days=1)
 
 def _expect_rows(tf: str) -> int:
-    return 1440 if tf == 'M1' else (288 if tf == 'M5' else None)
+    return {
+        'M1': 1440,
+        'M5': 288,
+        'M15': 96,
+        'M30': 48,
+    }[tf]
 
 def _add_control_cols(df: pd.DataFrame, symbol_logico: str, tf: str, region: str) -> pd.DataFrame:
     if df is None or df.empty:
