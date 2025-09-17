@@ -1,17 +1,6 @@
 # Troubleshooting
 
-### Warnings y alias
-- **FutureWarning ('H' deprecado)**: usar `1h` en vez de `1H`.
-
-### Ingesta IBKR
-- **Error 10299 / AGGTRADES**: Crypto requiere `AGGTRADES`. Ajusta `what_to_show` a `AGGTRADES` y `exchange` a `PAXOS`.
-- **Timeout al conectar**: valida TWS/IBG, `IB_HOST/PORT/CLIENT_ID` y que el login esté activo.
-
-### Lectura/escritura Parquet
-- **ArrowTypeError (tipos incompatibles)**: mezcla de tipos (p. ej. `source` dict vs string). Solución: normaliza esquema (Fase 3) o re-escribe el mes con esquema canónico.
-- **Faltan columnas (`timeframe`)**: asegúrate de incluir metadatos (`source, market, timeframe, symbol, exchange, what_to_show, vendor, tz`).
-
-### MTF / Alineación
-- **Columnas sufijadas faltantes**: confirma `ctx-tf` y que existan `part-YYYY-MM.parquet` para esos TF en el rango.
-- **Join vacío**: revisa filtros de fechas (UTC) y que `ts` esté en UTC con tz (no naive).
-
+- **DF vacío**: revisa que `--lake-root` apunte al **root del repo** (el reader añade `/data` internamente) y que exista `data/source=binance/.../part-YYYY-MM.parquet`.
+- **Un día con +1 vela**: asegúrate de leer con `date-to = día+1` (fin exclusivo). Si concatenas días, quita duplicados por `ts`.
+- **Rate limit**: ejecuta menos TFs/símbolos por corrida o aumenta `sleep`/baja `page size` si está disponible.
+- **Símbolo/Región**: si en `us` no existe el par, usa `--region global`.
