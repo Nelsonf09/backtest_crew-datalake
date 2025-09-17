@@ -1,16 +1,17 @@
-# Layout del datalake
+# Layout y convenciones
+
+- Parquet comprimido (ZSTD) por **mes** y **símbolo/TF**.
+- `ts` en UTC y representa **fin de vela** (bar_end).
+- Lecturas con semántica **[from, to)** para conteo exacto.
 
 ```
-{LAKE_ROOT}/
+repo_root/
   data/
-    source=ibkr/
+    source=binance/
       market=crypto/
-        timeframe=TF/              # M1, M5, M15, H1, ...
-          symbol=SYMBOL/           # p.ej., BTC-USD
+        timeframe=M1|M5|M15|M30/
+          symbol=SYMBOL/
             year=YYYY/
               month=MM/
                 part-YYYY-MM.parquet
 ```
-
-- **Schema canónico**: `ts, open, high, low, close, volume, source, market, timeframe, symbol, exchange, what_to_show, vendor, tz`.
-- **Particionado** mensual/año para escrituras idempotentes y lecturas eficientes.

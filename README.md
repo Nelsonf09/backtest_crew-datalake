@@ -1,235 +1,182 @@
-# backtest_crew-datalake
+# backtest_crew-datalake — Fase 4 (Reader + Binance)
 
-**Fase 0 (Diseño)** — Estándares para un data lake local de backtesting (con foco en **Cripto**), independiente de IB en tiempo de ejecución.
+> **Objetivo**: data lake local para backtesting con cripto OHLCV en UTC y semántica `bar_end`, ingestas reproducibles (Binance) y lecturas sin IB. Esta versión documenta **Fase 4** y asume la rama `phase-4`.
 
-## Objetivos Fase 0
-- Definir **formato canónico**: Parquet (ZSTD), columnas OHLCV + `ts` UTC (semántica **bar_end**).
-- Definir **particionado**: `source/market/timeframe/symbol/year/month/`.
-- Establecer **datasets derivados**: agregados (M5/M15/H1/D1) y **niveles diarios** (estrechos) con OR/PDH/PDL.
-- Estándares anti-look-ahead para estrategias MTF (B&R).
-- Perfiles de **liquidez cripto** (OR windows por tz) separados de los datos.
+## Índice
+- [Arquitectura y layout](#arquitectura-y-layout)
+- [Requisitos](#requisitos)
+- [Setup rápido (Windows PowerShell)](#setup-rápido-windows-powershell)
+- [Seleccionar/actualizar `phase-4`](#seleccionaractualizar-phase-4)
+- [Ingesta por día (Binance)](#ingesta-por-día-binance)
+- [Ingesta por mes (orquestador)](#ingesta-por-mes-orquestador)
+- [Lectura y validaciones (QC)](#lectura-y-validaciones-qc)
+- [Ejemplos por timeframe](#ejemplos-por-timeframe)
+- [Join Multi-TF para estrategias](#join-multi-tf-para-estrategias)
+- [Resolución de problemas](#resolución-de-problemas)
 
-## Layout
+---
+
+## Arquitectura y layout
+**Convenciones**
+- Formato canónico: **Parquet (ZSTD)** con columnas: `ts` (UTC, fin de vela), `open`, `high`, `low`, `close`, `volume`, `symbol`, `tf`, `source`, `exchange`.
+- Particionado mensual por símbolo y TF:
 ```
-data/
-  source=ibkr/
-    market=crypto/
-      timeframe=M1/
-        symbol=BTC-USD/
-          year=2025/
-            month=08/
-              part-2025-08.parquet
-levels/
-  market=crypto/
-    symbol=BTC-USD/
-      kind=daily/
-        year=2025/
-          month=08/
-            btcusd_levels_2025-08.parquet
+repo_root/
+  data/
+    source=binance/
+      market=crypto/
+        timeframe=M1|
+                  M5|
+                 M15|
+                 M30/
+          symbol=BTC-USD/
+            year=YYYY/
+              month=MM/
+                part-YYYY-MM.parquet
 ```
+- Semántica de lectura: rangos **[from, to)** (fin exclusivo) para obtener el conteo exacto de velas por día.
 
-## Convenciones clave
-- **UTC everywhere**. `ts` = fin de vela (**bar_end**).
-- **M1 canónico** + agregados offline.
-- Niveles diarios **estrechos**: `session_date`, `pdh/pdl/pdc` (D-1), `or_start_utc/or_end_utc`, `orh/orl`.
-- **Crypto**: `what_to_show=AGGTRADES`, 24/7, sin RTH.
+## Requisitos
+- Python 3.10+ (recomendado)
+- Windows PowerShell (ejemplos usan PowerShell, pero hay equivalentes POSIX en `docs/`)
 
-## Quickstart (PowerShell)
+## Setup rápido (Windows PowerShell)
 ```powershell
-python -m venv .venv; .\\.venv\Scripts\Activate
+# 1) Clonar y entrar al repo
+git clone https://github.com/Nelsonf09/backtest_crew-datalake.git
+cd backtest_crew-datalake
+
+# 2) Crear/activar venv e instalar deps
+python -m venv .venv
+..\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-$env:LAKE_ROOT="C:\\work\\backtest_crew-datalake"
-$env:IB_HOST="127.0.0.1"
-$env:IB_PORT="7497"
-$env:IB_CLIENT_ID="1"
-python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
-python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-01 --to-tf M5
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root $env:LAKE_ROOT
-python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5 --lake-root $env:LAKE_ROOT
+
+# 3) Apuntar al lake (root del repo)
+$env:LAKE_ROOT = "C:\work\backtest_crew-datalake"
 ```
 
-## Próximas fases
-- Fase 1: Ingesta offline M1 (BTC-USD, ETH-USD) y validación.
-- Fase 2: Agregados (M5/M15/H1/D1) y niveles diarios.
-- Fase 3: Capa de acceso (DuckDB→pandas / Polars) y contratos de lectura.
-
-
-## Reuso de código `backtest_crew`
-Este repo **reusa** módulos de `backtest_crew` ubicados bajo `vendor/backtest_crew` (como submódulo o snapshot). Para importarlos desde el código del datalake:
-
-```python
-from datalake.ingestors.ibkr.submodule_bridge import ensure_submodule_on_syspath
-ensure_submodule_on_syspath()
-from config.crypto_symbols import CRYPTO_SYMBOLS
-```
-
-
-
-## Fase 1 · Ingesta de Cripto (M1, IBKR)
-- Descarga de velas **M1** vía IBKR (`AGGTRADES`).
-- Persistencia en **Parquet ZSTD** con particionado `source/market/timeframe/symbol/year/month`.
-- **Timestamps** en UTC con semántica **bar_end**.
-
-### Quickstart
-```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-07-01 --to 2025-07-31
-```
-Más detalles en: [`docs/usage/ingest_crypto_m1.md`](docs/usage/ingest_crypto_m1.md)
-
-
-
-## Fase 2 · Agregados & Niveles (B&R)
-Ver guía: [`docs/usage/phase2_aggregates_levels.md`](docs/usage/phase2_aggregates_levels.md)
-
-
-
-## Fase 3 · Bridge Offline (backtest_crew)
-- Proveedor `LakeProvider` que entrega `df_exec` y `df_filter` con el mismo layout que IB.
-- Soporta TFs: M1/M5/M15/H1/D1 (usa agregados precomputados o *fallback* on-the-fly).
-
-```bash
-python -m bridge.backtest_crew.cli --symbol BTC-USD --from 2025-07-01 --to 2025-07-10 --exec-tf "1 min" --filter-tf "5 mins"
-```
-Más info: [`docs/usage/phase3_offline_bridge.md`](docs/usage/phase3_offline_bridge.md)
-
-## Uso detallado
-
-### Fase 2 — Resample desde M1 (offline con datos sintéticos)
-
-> Objetivo: validar pipeline de resampling M1→M5/M15/H1 sin depender de IB.
-
-**Preparación**
+## Seleccionar/actualizar `phase-4`
 ```powershell
-# PowerShell
-$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
-$env:IB_EXCHANGE_CRYPTO = "PAXOS"
-$env:IB_WHAT_TO_SHOW    = "AGGTRADES"
+git fetch origin
+git checkout phase-4
+git pull --ff-only
 ```
 
-**Generar M1 sintético (ej. 3 días)**
+## Ingesta por día (Binance)
+> Fuente alternativa a IB, sin credenciales (se usa API pública) y con manejo de paginación.
+
+Ejemplo para **BTC-USD** en **M1** el **2025-08-01**:
 ```powershell
-python .\\tools\\synth_gen.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03
+python -m datalake.ingestors.binance.ingest_cli `
+  --symbols BTC-USD `
+  --from 2025-08-01 --to 2025-08-01 `
+  --tf M1 `
+  --binance-region global
 ```
-
-**Validar M1 por día**
+Cambia `--tf` por **M5**, **M15** o **M30** para otros timeframes:
 ```powershell
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root C:\\work\\backtest_crew-datalake
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-02 --lake-root C:\\work\\backtest_crew-datalake
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-03 --lake-root C:\\work\\backtest_crew-datalake
+# M5
+python -m datalake.ingestors.binance.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01 --tf M5 --binance-region global
+# M15
+python -m datalake.ingestors.binance.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01 --tf M15 --binance-region global
+# M30
+python -m datalake.ingestors.binance.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01 --tf M30 --binance-region global
 ```
 
-**Resample M1 → M5,M15,H1**
+## Ingesta por mes (orquestador)
+> Script de orquestación que recorre los días del mes y TFs solicitados respetando límites de solicitudes de Binance.
 ```powershell
-python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --to-tf M5,M15,H1
+python tools\fill_binance_month.py `
+  --symbols BTC-USD `
+  --month 2025-08 `
+  --tfs M1,M5,M15,M30 `
+  --region global
 ```
+Parámetros:
+- `--symbols`: uno o varios símbolos separados por coma (ej: `BTC-USD,ETH-USD`).
+- `--month`: `YYYY-MM`.
+- `--tfs`: lista de TFs (M1,M5,M15,M30).
+- `--region`: `global` o `us`.
 
-**Checks por TF**
+## Lectura y validaciones (QC)
+**Principio**: rangos **[from, to)** → día completo sin vela extra del día siguiente.
+
+Leer 2025-08-01 completo en **M1**:
 ```powershell
-python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5  --lake-root C:\\work\\backtest_crew-datalake
-python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M15 --lake-root C:\\work\\backtest_crew-datalake
-python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf H1  --lake-root C:\\work\\backtest_crew-datalake
+python -m datalake.read.cli read `
+  --lake-root C:\work\backtest_crew-datalake `
+  --market crypto --tf M1 --symbol BTC-USD `
+  --date-from 2025-08-01 --date-to 2025-08-02 `
+  --source binance --head 3
 ```
-
-**Demo offline (todo en un paso)**
+**QC mensual automático** (comprueba que M1=1440, M5=288, M15=96, M30=48 por día):
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\\tools\\offline_demo.ps1
+$py = @'
+from datalake.read.api import read_range_df
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+
+LAKE   = r"C:/work/backtest_crew-datalake"
+SYMBOL = "BTC-USD"; SOURCE = "binance"
+YEAR, MONTH = 2025, 8
+UTC = timezone.utc
+start = datetime(YEAR, MONTH, 1, tzinfo=UTC)
+end_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+ndays = (end_month - start).days
+expected = {"M1":1440, "M5":288, "M15":96, "M30":48}
+
+issues = []
+for tf, exp in expected.items():
+    for i in range(ndays):
+        d0 = (start + timedelta(days=i)).date().isoformat()
+        d1 = (start + timedelta(days=i+1)).date().isoformat()
+        df = read_range_df(LAKE, 'crypto', tf, SYMBOL, d0, d1, SOURCE)
+        if len(df) != exp:
+            issues.append((tf, d0, len(df), exp))
+
+print('QC terminado.')
+if issues:
+    print('Días con conteo inesperado:')
+    for x in issues: print('-', x)
+else:
+    print('¡Todo completo para el mes en todos los TFs!')
+'@
+$py | Set-Content .\tmp_qc_mes.py -Encoding UTF8
+python .\tmp_qc_mes.py
 ```
 
-### Fase 3 — Ingesta IB (chunking) y validación
+## Ejemplos por timeframe
+- **M1**: 1440 velas por día.
+- **M5**: 288 velas por día.
+- **M15**: 96 velas por día.
+- **M30**: 48 velas por día.
 
-> Objetivo: cubrir 24h/día M1 con IB (cuando el servidor esté disponible), en 3 ventanas de 8h (00–08, 08–16, 16–24) con subtramos robustos.
-
-**Ingesta con chunking**
+Lectura de un **subrango intradía** (ej: 14:30–16:30 UTC):
 ```powershell
-$env:LAKE_ROOT="C:\\work\\backtest_crew-datalake"
-$env:IB_HOST="127.0.0.1"; $env:IB_PORT="7497"; $env:IB_CLIENT_ID="1"
-$env:IB_EXCHANGE_CRYPTO="PAXOS"; $env:IB_WHAT_TO_SHOW="AGGTRADES"
-python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
+python -m datalake.read.cli read `
+  --lake-root C:\work\backtest_crew-datalake `
+  --market crypto --tf M1 --symbol BTC-USD `
+  --date-from 2025-08-01T14:30:00Z --date-to 2025-08-01T16:30:00Z `
+  --source binance --head 5
 ```
 
-**Validación de día completo**
+## Join Multi-TF para estrategias
 ```powershell
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root C:\\work\\backtest_crew-datalake
+python -m datalake.read.cli join-mtf `
+  --lake-root C:\work\backtest_crew-datalake `
+  --symbol BTC-USD `
+  --exec-tf M1 `
+  --from 2025-08-01 --to 2025-08-02 `
+  --ctx-tf M5,M15,M30 `
+  --out-csv mtf_join.csv
 ```
 
-**Notas**
-- Reingestar el mismo rango es idempotente (deduplicación por `ts`).
-- Si usaste datos sintéticos para rellenar, puedes borrar el `part-YYYY-MM.parquet` antes de reingestar o configurar el writer para preferir `keep='last'`.
+## Resolución de problemas
+- **DF vacío al leer**: verifica `--lake-root` (debe apuntar al **repo root**) y que la ingesta haya creado `data/source=binance/.../part-YYYY-MM.parquet`.
+- **Más/menos filas de lo esperado**: asegúrate de usar `date-to` **exclusivo** (día+1). Reingesta es idempotente (se deduplican `ts`).
+- **Binance rate limits**: el orquestador pacea solicitudes. Si ves 429, reintenta con `--sleep-per-call` mayor (ver docs) o reduce TFs/símbolos por corrida.
+- **Regiones**: si un símbolo no existe en `us`, usa `--region global`.
 
-## Fase 4 — Reader + Multi-TF join
+---
 
-**Objetivo**: consumir datos del datalake sin IB y alinear contextos (M5/M15/H1) con el TF de ejecución.
-
-### Uso rápido (PowerShell)
-```powershell
-$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
-
-# Leer rango
-python -m datalake.read.cli read --lake-root $env:LAKE_ROOT --market crypto --tf M1 --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --head 5
-
-# Join multi-TF
-python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD --exec-tf M1 --from 2025-08-01 --to 2025-08-01 --ctx-tf M5,M15,H1 --out-csv mtf_join.csv
-```
-
-### Documentación
-- `docs/usage/layout.md`
-- `docs/usage/reader.md`
-- `docs/usage/mtf.md`
-- `docs/usage/troubleshooting.md`
-
-## Estado de Fases
-
-| Fase | Objetivo | Estado |
-|------|----------|--------|
-| 0    | Estructura básica del repo, convenciones, CI mínimo | ✅ Completado |
-| 1    | Ingesta desde IBKR (crypto, AGGTRADES/PAXOS) + CLI básica | ✅ Completado |
-| 2    | Datos sintéticos M1 + resample a M5/M15/H1 + validadores | ✅ Completado |
-| 3    | Idempotencia/merge seguro en escritor (Parquet mensual) + normalización de esquema | ✅ Completado |
-| 4    | Reader API + Alineación Multi-TF (asof) + CLIs y docs | ✅ Completado |
-
-## Ramas activas
-| Rama   | Alcance |
-|--------|---------|
-| phase-3 | Ingesta M1, agregados y validadores básicos |
-| phase-4 | CLI endurecida, agregador robusto y documentación extendida |
-
-### Quickstart (PowerShell)
-```powershell
-# 1) Instalar en editable
-python -m pip install -e .
-
-# 2) Variables base
-$env:LAKE_ROOT = "C:\\work\\backtest_crew-datalake"
-$env:IB_HOST = "127.0.0.1"; $env:IB_PORT = "7497"; $env:IB_CLIENT_ID = "1"
-$env:IB_EXCHANGE_CRYPTO = "PAXOS"; $env:IB_WHAT_TO_SHOW = "AGGTRADES"
-
-# 3) Ingesta (si IB está disponible)
-python -m datalake.ingestors.ibkr.ingest_cli --symbols BTC-USD --from 2025-08-01 --to 2025-08-01
-
-# 4) (Offline) Sintético + Resample + Checks
-python .\\tools\\synth_gen.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03
-python .\\tools\\resample_from_m1.py --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --to-tf M5,M15,H1
-python .\\tools\\check_day.py --symbol BTC-USD --date 2025-08-01 --lake-root $env:LAKE_ROOT
-python .\\tools\\check_mtf.py --symbol BTC-USD --date 2025-08-01 --tf M5 --lake-root $env:LAKE_ROOT
-
-# 5) Lectura y Join Multi-TF
-python -m datalake.read.cli read --lake-root $env:LAKE_ROOT --market crypto --tf M1 --symbol BTC-USD --from 2025-08-01 --to 2025-08-03 --head 5
-python -m datalake.read.cli join-mtf --lake-root $env:LAKE_ROOT --symbol BTC-USD --exec-tf M1 --from 2025-08-01 --to 2025-08-01 --ctx-tf M5,M15,H1 --out-csv mtf_join.csv
-```
-> **IB Error 321**: el ingestor ahora expresa la duración en segundos o usa `"1 D"` para ventanas diarias de M1, evitando la unidad `H` que IB rechaza.
-
-### Documentación
-- `docs/overview.md`
-- `docs/usage/layout.md`
-- `docs/usage/phase0.md`
-- `docs/usage/phase1.md`
-- `docs/usage/phase2.md`
-- `docs/usage/phase3.md`
-- `docs/usage/phase4.md`
-- `docs/usage/phase-4.md`
-- `docs/usage/reader.md`
-- `docs/usage/mtf.md`
-- `docs/usage/tools.md`
-- `docs/usage/troubleshooting.md`
+**Licencia**: MIT
