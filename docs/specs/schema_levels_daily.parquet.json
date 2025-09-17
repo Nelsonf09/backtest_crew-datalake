@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": 1,
+  "dataset": "crypto.levels",
+  "timeframe": "D1",
+  "description": "Niveles diarios derivados de OHLCV en UTC con semántica bar_end y contrato de lectura [from, to).",
+  "layout": "data/source={source}/market=crypto/timeframe={tf}/symbol={symbol}/level={level}/year={YYYY}/month={MM}/part-{YYYY}-{MM}.parquet",
+  "ts_semantics": "bar_end",
+  "range_contract": "[from, to) en UTC",
+  "properties": {
+    "ts": {
+      "dtype": "timestamp[ns, tz=UTC]",
+      "nullable": false,
+      "description": "UTC bar_end del día para el que aplica el nivel."
+    },
+    "level": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Nombre del nivel (ej. previous_high, previous_low, pivot)."
+    },
+    "value": {
+      "dtype": "float64",
+      "nullable": false,
+      "description": "Valor numérico del nivel."
+    },
+    "symbol": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Símbolo normalizado (por ejemplo BTC-USD)."
+    },
+    "source": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Proveedor o pipeline que calculó el nivel."
+    },
+    "exchange": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Exchange fuente de los datos base."
+    },
+    "tf_origin": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Timeframe base usado para el cálculo (ej. M1)."
+    },
+    "metadata": {
+      "dtype": "struct",
+      "nullable": true,
+      "description": "Metadatos opcionales serializados (por ejemplo método de cálculo)."
+    }
+  },
+  "required": ["ts", "level", "value", "symbol", "source", "exchange", "tf_origin"],
+  "ordering": ["ts", "level"],
+  "primary_key": ["source", "symbol", "level", "ts"],
+  "dedupe_on": ["source", "symbol", "level", "ts"]
+}

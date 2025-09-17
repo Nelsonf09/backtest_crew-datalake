@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": 1,
+  "dataset": "crypto.candles",
+  "timeframe": "M5",
+  "description": "Esquema canónico de velas M5 (mismas columnas que M1). UTC bar_end, contrato [from, to).",
+  "layout": "data/source={source}/market=crypto/timeframe={tf}/symbol={symbol}/year={YYYY}/month={MM}/part-{YYYY}-{MM}.parquet",
+  "ts_semantics": "bar_end",
+  "range_contract": "[from, to) en UTC",
+  "properties": {
+    "ts": {
+      "dtype": "timestamp[ns, tz=UTC]",
+      "nullable": false,
+      "description": "UTC bar_end de la vela de 5 minutos (ts marca el final del intervalo)."
+    },
+    "open": { "dtype": "float64", "nullable": false },
+    "high": { "dtype": "float64", "nullable": false },
+    "low": { "dtype": "float64", "nullable": false },
+    "close": { "dtype": "float64", "nullable": false },
+    "volume": { "dtype": "float64", "nullable": true },
+    "symbol": { "dtype": "string", "nullable": false },
+    "tf": { "dtype": "string", "nullable": false },
+    "source": { "dtype": "string", "nullable": false },
+    "exchange": { "dtype": "string", "nullable": false }
+  },
+  "required": ["ts", "open", "high", "low", "close", "symbol", "tf", "source", "exchange"],
+  "ordering": ["ts"],
+  "primary_key": ["source", "symbol", "tf", "ts"],
+  "dedupe_on": ["source", "symbol", "tf", "ts"]
+}
