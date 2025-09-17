@@ -1,11 +1,22 @@
-# Particionado del Data Lake
+# Particionado del datalake
 
-Ruta base (ejemplo cripto IBKR):
+El lake sigue la semántica `bar_end` en UTC y contratos de lectura en rangos **[from, to)**. Cada archivo Parquet respeta un
+particionado jerárquico que agrupa por **fuente**, **mercado**, **timeframe**, **símbolo** y fecha calendario.
+
 ```
-data/source=ibkr/market=crypto/timeframe=<TF>/symbol=<SYMBOL>/year=<YYYY>/month=<MM>/part-<YYYY>-<MM>.parquet
+data/
+  source={source}/
+    market=crypto/
+      timeframe={tf}/
+        symbol={symbol}/
+          year={YYYY}/
+            month={MM}/
+              part-{YYYY}-{MM}.parquet
 ```
-- **TF**: M1 (canónico), M5, M15, H1, D1 (agregados offline).
-- **SYMBOL**: `BASE-QUOTE` (p. ej., `BTC-USD`).
-- **Archivo mensual** con **row groups ~diarios**. Evita “archivo por día” salvo casos especiales.
-- **Compresión**: ZSTD (preferida) o Snappy.
-- **Semántica**: `ts` en UTC, **bar_end**.
+
+## Convenciones
+- `tf` utiliza códigos tipo `M1`, `M5`, `M15`, `M30`, etc.
+- Los timestamps (`ts`) representan el final de la vela (`bar_end`) y están en UTC.
+- La lectura siempre debe pedirse con rangos half-open: `from <= ts < to`.
+- Las particiones no se solapan: cada archivo contiene valores de `ts` estrictamente crecientes.
+- Cualquier dataset derivado (por ejemplo niveles diarios) reutiliza el mismo árbol añadiendo particiones específicas, como `level={level}`.

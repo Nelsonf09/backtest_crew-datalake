@@ -17,5 +17,7 @@ __pycache__/
 cache/
 data/
 *.tmp.parquet
-levels/
 *.parquet
+
+levels/
+aggregates/

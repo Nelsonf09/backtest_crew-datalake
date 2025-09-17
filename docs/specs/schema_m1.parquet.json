@@ -1,20 +1,80 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Schema M1 OHLCV (Crypto)",
-  "type": "object",
+  "version": 1,
+  "dataset": "crypto.candles",
+  "timeframe": "M1",
+  "description": "Esquema canónico de velas M1. Timestamps en UTC al cierre de vela (bar_end). Contrato de lectura [from, to).",
+  "layout": "data/source={source}/market=crypto/timeframe={tf}/symbol={symbol}/year={YYYY}/month={MM}/part-{YYYY}-{MM}.parquet",
+  "ts_semantics": "bar_end",
+  "range_contract": "[from, to) en UTC",
   "properties": {
-    "ts": {"type": "string", "format": "date-time", "description": "UTC bar_end timestamp"},
-    "open": {"type": "number"},
-    "high": {"type": "number"},
-    "low": {"type": "number"},
-    "close": {"type": "number"},
-    "volume": {"type": "integer"},
-    "source": {"type": "string", "enum": ["ibkr"]},
-    "market": {"type": "string", "enum": ["crypto"]},
-    "symbol": {"type": "string"},
-    "exchange": {"type": "string"},
-    "what_to_show": {"type": "string", "enum": ["AGGTRADES"]}
+    "ts": {
+      "dtype": "timestamp[ns, tz=UTC]",
+      "nullable": false,
+      "description": "UTC bar_end de la vela de 1 minuto (ts marca el final del intervalo)."
+    },
+    "open": {
+      "dtype": "float64",
+      "nullable": false,
+      "description": "Precio de apertura del minuto."
+    },
+    "high": {
+      "dtype": "float64",
+      "nullable": false,
+      "description": "Precio máximo del minuto."
+    },
+    "low": {
+      "dtype": "float64",
+      "nullable": false,
+      "description": "Precio mínimo del minuto."
+    },
+    "close": {
+      "dtype": "float64",
+      "nullable": false,
+      "description": "Precio de cierre del minuto."
+    },
+    "volume": {
+      "dtype": "float64",
+      "nullable": true,
+      "description": "Volumen negociado durante el minuto (cuando la fuente lo provee)."
+    },
+    "symbol": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Símbolo de trading normalizado (por ejemplo BTC-USD)."
+    },
+    "tf": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Timeframe declarado en el archivo (M1)."
+    },
+    "source": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Proveedor de datos o colector (por ejemplo binance)."
+    },
+    "exchange": {
+      "dtype": "string",
+      "nullable": false,
+      "description": "Exchange original de la data."
+    }
   },
-  "required": ["ts", "open", "high", "low", "close", "volume"],
-  "additionalProperties": true
+  "required": ["ts", "open", "high", "low", "close", "symbol", "tf", "source", "exchange"],
+  "ordering": ["ts"],
+  "primary_key": ["source", "symbol", "tf", "ts"],
+  "dedupe_on": ["source", "symbol", "tf", "ts"],
+  "examples": {
+    "head": {
+      "ts": "2025-08-01T00:00:00Z",
+      "open": 115764.07,
+      "high": 115764.08,
+      "low": 115704.78,
+      "close": 115729.00,
+      "volume": 11.87539,
+      "symbol": "BTC-USD",
+      "tf": "M1",
+      "source": "binance",
+      "exchange": "BINANCE"
+    }
+  }
 }
